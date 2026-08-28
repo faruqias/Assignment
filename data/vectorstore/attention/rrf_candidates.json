@@ -1,0 +1,282 @@
+[
+  {
+    "vector_id": 7,
+    "rrf_score": 0.03278688524590164,
+    "dense_rank": 1,
+    "bm25_rank": 1,
+    "query": "How does scaled dot-product attention work?"
+  },
+  {
+    "vector_id": 10,
+    "rrf_score": 0.03225806451612903,
+    "dense_rank": 2,
+    "bm25_rank": 2,
+    "query": "How does scaled dot-product attention work?"
+  },
+  {
+    "vector_id": 8,
+    "rrf_score": 0.03125763125763126,
+    "dense_rank": 3,
+    "bm25_rank": 5,
+    "query": "How does scaled dot-product attention work?"
+  },
+  {
+    "vector_id": 15,
+    "rrf_score": 0.030798389007344232,
+    "dense_rank": 7,
+    "bm25_rank": 3,
+    "query": "How does scaled dot-product attention work?"
+  },
+  {
+    "vector_id": 5,
+    "rrf_score": 0.030330882352941176,
+    "dense_rank": 4,
+    "bm25_rank": 8,
+    "query": "How does scaled dot-product attention work?"
+  },
+  {
+    "vector_id": 11,
+    "rrf_score": 0.030117753623188408,
+    "dense_rank": 9,
+    "bm25_rank": 4,
+    "query": "How does scaled dot-product attention work?"
+  },
+  {
+    "vector_id": 9,
+    "rrf_score": 0.02967032967032967,
+    "dense_rank": 5,
+    "bm25_rank": 10,
+    "query": "How does scaled dot-product attention work?"
+  },
+  {
+    "vector_id": 23,
+    "rrf_score": 0.02919863597612958,
+    "dense_rank": 8,
+    "bm25_rank": 9,
+    "query": "How does scaled dot-product attention work?"
+  },
+  {
+    "vector_id": 2,
+    "rrf_score": 0.015151515151515152,
+    "dense_rank": 6,
+    "bm25_rank": null,
+    "query": "How does scaled dot-product attention work?"
+  },
+  {
+    "vector_id": 30,
+    "rrf_score": 0.015151515151515152,
+    "dense_rank": null,
+    "bm25_rank": 6,
+    "query": "How does scaled dot-product attention work?"
+  },
+  {
+    "vector_id": 26,
+    "rrf_score": 0.031754032258064516,
+    "dense_rank": 2,
+    "bm25_rank": 4,
+    "query": "What are the different variations of the Transformer architecture?"
+  },
+  {
+    "vector_id": 2,
+    "rrf_score": 0.030798389007344232,
+    "dense_rank": 7,
+    "bm25_rank": 3,
+    "query": "What are the different variations of the Transformer architecture?"
+  },
+  {
+    "vector_id": 27,
+    "rrf_score": 0.03076923076923077,
+    "dense_rank": 5,
+    "bm25_rank": 5,
+    "query": "What are the different variations of the Transformer architecture?"
+  },
+  {
+    "vector_id": 0,
+    "rrf_score": 0.01639344262295082,
+    "dense_rank": 1,
+    "bm25_rank": null,
+    "query": "What are the different variations of the Transformer architecture?"
+  },
+  {
+    "vector_id": 23,
+    "rrf_score": 0.01639344262295082,
+    "dense_rank": null,
+    "bm25_rank": 1,
+    "query": "What are the different variations of the Transformer architecture?"
+  },
+  {
+    "vector_id": 12,
+    "rrf_score": 0.016129032258064516,
+    "dense_rank": null,
+    "bm25_rank": 2,
+    "query": "What are the different variations of the Transformer architecture?"
+  },
+  {
+    "vector_id": 6,
+    "rrf_score": 0.015873015873015872,
+    "dense_rank": 3,
+    "bm25_rank": null,
+    "query": "What are the different variations of the Transformer architecture?"
+  },
+  {
+    "vector_id": 1,
+    "rrf_score": 0.015625,
+    "dense_rank": 4,
+    "bm25_rank": null,
+    "query": "What are the different variations of the Transformer architecture?"
+  },
+  {
+    "vector_id": 3,
+    "rrf_score": 0.015151515151515152,
+    "dense_rank": 6,
+    "bm25_rank": null,
+    "query": "What are the different variations of the Transformer architecture?"
+  },
+  {
+    "vector_id": 8,
+    "rrf_score": 0.015151515151515152,
+    "dense_rank": null,
+    "bm25_rank": 6,
+    "query": "What are the different variations of the Transformer architecture?"
+  },
+  {
+    "vector_id": 30,
+    "rrf_score": 0.03278688524590164,
+    "dense_rank": 1,
+    "bm25_rank": 1,
+    "query": "Which attention heads appear to perform anaphora resolution?"
+  },
+  {
+    "vector_id": 32,
+    "rrf_score": 0.031754032258064516,
+    "dense_rank": 4,
+    "bm25_rank": 2,
+    "query": "Which attention heads appear to perform anaphora resolution?"
+  },
+  {
+    "vector_id": 8,
+    "rrf_score": 0.030834914611005692,
+    "dense_rank": 2,
+    "bm25_rank": 8,
+    "query": "Which attention heads appear to perform anaphora resolution?"
+  },
+  {
+    "vector_id": 10,
+    "rrf_score": 0.030798389007344232,
+    "dense_rank": 3,
+    "bm25_rank": 7,
+    "query": "Which attention heads appear to perform anaphora resolution?"
+  },
+  {
+    "vector_id": 2,
+    "rrf_score": 0.030776515151515152,
+    "dense_rank": 6,
+    "bm25_rank": 4,
+    "query": "Which attention heads appear to perform anaphora resolution?"
+  },
+  {
+    "vector_id": 11,
+    "rrf_score": 0.030536130536130537,
+    "dense_rank": 5,
+    "bm25_rank": 6,
+    "query": "Which attention heads appear to perform anaphora resolution?"
+  },
+  {
+    "vector_id": 15,
+    "rrf_score": 0.03036576949620428,
+    "dense_rank": 9,
+    "bm25_rank": 3,
+    "query": "Which attention heads appear to perform anaphora resolution?"
+  },
+  {
+    "vector_id": 23,
+    "rrf_score": 0.029418126757516764,
+    "dense_rank": 7,
+    "bm25_rank": 9,
+    "query": "Which attention heads appear to perform anaphora resolution?"
+  },
+  {
+    "vector_id": 29,
+    "rrf_score": 0.015384615384615385,
+    "dense_rank": null,
+    "bm25_rank": 5,
+    "query": "Which attention heads appear to perform anaphora resolution?"
+  },
+  {
+    "vector_id": 5,
+    "rrf_score": 0.014705882352941176,
+    "dense_rank": 8,
+    "bm25_rank": null,
+    "query": "Which attention heads appear to perform anaphora resolution?"
+  },
+  {
+    "vector_id": 16,
+    "rrf_score": 0.03252247488101534,
+    "dense_rank": 1,
+    "bm25_rank": 2,
+    "query": "What is the computational complexity of self-attention?"
+  },
+  {
+    "vector_id": 15,
+    "rrf_score": 0.03252247488101534,
+    "dense_rank": 2,
+    "bm25_rank": 1,
+    "query": "What is the computational complexity of self-attention?"
+  },
+  {
+    "vector_id": 8,
+    "rrf_score": 0.03125763125763126,
+    "dense_rank": 5,
+    "bm25_rank": 3,
+    "query": "What is the computational complexity of self-attention?"
+  },
+  {
+    "vector_id": 2,
+    "rrf_score": 0.03057889822595705,
+    "dense_rank": 3,
+    "bm25_rank": 8,
+    "query": "What is the computational complexity of self-attention?"
+  },
+  {
+    "vector_id": 5,
+    "rrf_score": 0.030303030303030304,
+    "dense_rank": 6,
+    "bm25_rank": 6,
+    "query": "What is the computational complexity of self-attention?"
+  },
+  {
+    "vector_id": 9,
+    "rrf_score": 0.029418126757516764,
+    "dense_rank": 9,
+    "bm25_rank": 7,
+    "query": "What is the computational complexity of self-attention?"
+  },
+  {
+    "vector_id": 29,
+    "rrf_score": 0.015625,
+    "dense_rank": 4,
+    "bm25_rank": null,
+    "query": "What is the computational complexity of self-attention?"
+  },
+  {
+    "vector_id": 1,
+    "rrf_score": 0.015625,
+    "dense_rank": null,
+    "bm25_rank": 4,
+    "query": "What is the computational complexity of self-attention?"
+  },
+  {
+    "vector_id": 4,
+    "rrf_score": 0.015384615384615385,
+    "dense_rank": null,
+    "bm25_rank": 5,
+    "query": "What is the computational complexity of self-attention?"
+  },
+  {
+    "vector_id": 7,
+    "rrf_score": 0.014925373134328358,
+    "dense_rank": 7,
+    "bm25_rank": null,
+    "query": "What is the computational complexity of self-attention?"
+  }
+]

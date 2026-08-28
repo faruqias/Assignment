@@ -1,0 +1,238 @@
+[
+  {
+    "query": "How does scaled dot-product attention work?",
+    "answer": "According to Section 3.2.1 Scaled Dot-Product Attention (Page 4-4), Scaled Dot-Product Attention works as follows:\n\n1. The input consists of queries (Q) and keys (K) of dimension d_k, and values (V) of dimension d_v.\n2. The dot product of the query with all keys is computed.\n3. Each dot product is divided by √d_k.\n4. A softmax function is applied to obtain the weights on the values.\n5. The weights are then used to compute the output by taking a weighted sum of the values.\n\nIn practice, the attention function is computed on a set of queries simultaneously, packed together into a matrix Q. The keys and values are also packed together into matrices K and V, respectively.\n\nThe scaling factor of 1/√d_k is used to prevent the dot products from growing too large in magnitude, which can cause the softmax function to have extremely small gradients. This is why the attention function is called \"scaled dot-product attention\".",
+    "sources": [
+      {
+        "chunk_id": "attention_text_6",
+        "content_type": "text",
+        "page_start": 4,
+        "page_end": 4,
+        "section_path": [
+          "3 Model Architecture",
+          "3.2 Attention",
+          "3.2.1 Scaled Dot-Product Attention"
+        ],
+        "reranker_score": 0.9952981211516023
+      },
+      {
+        "chunk_id": "attention_figure_2",
+        "content_type": "figure",
+        "page_start": 4,
+        "page_end": 4,
+        "section_path": [
+          "3 Model Architecture",
+          "3.2 Attention",
+          "3.2.2 Multi-Head Attention"
+        ],
+        "reranker_score": 0.9204383627045004
+      },
+      {
+        "chunk_id": "attention_text_19",
+        "content_type": "text",
+        "page_start": 8,
+        "page_end": 9,
+        "section_path": [
+          "6 Results",
+          "6.2 Model Variations"
+        ],
+        "reranker_score": 0.05210054737907944
+      },
+      {
+        "chunk_id": "attention_text_5",
+        "content_type": "text",
+        "page_start": 3,
+        "page_end": 4,
+        "section_path": [
+          "3 Model Architecture",
+          "3.2 Attention"
+        ],
+        "reranker_score": 0.0014364586110099072
+      },
+      {
+        "chunk_id": "attention_text_2",
+        "content_type": "text",
+        "page_start": 2,
+        "page_end": 2,
+        "section_path": [
+          "2 Background"
+        ],
+        "reranker_score": 0.001340740447783627
+      }
+    ]
+  },
+  {
+    "query": "What are the different variations of the Transformer architecture?",
+    "answer": "The different variations of the Transformer architecture are:\n\n1. Base model: This is the original Transformer model, which uses a single attention head and a sinusoidal positional encoding.\n2. (A) Model: This model uses 16 attention heads and 32 attention key and value dimensions, while keeping the amount of computation constant.\n3. (B) Model: This model reduces the attention key size d k, which hurts model quality.\n4. (C) Model: This model uses a bigger model with 256 attention heads and 1024 attention key and value dimensions.\n5. (D) Model: This model uses an even bigger model with 4096 attention heads and 1024 attention key and value dimensions.\n6. (E) Model: This model replaces the sinusoidal positional encoding with learned positional embeddings.\n\nThese variations are listed in Table 3, which is presented in Section 6.2 of the document.",
+    "sources": [
+      {
+        "chunk_id": "attention_table_2",
+        "content_type": "table",
+        "page_start": 9,
+        "page_end": 9,
+        "section_path": [
+          "6 Results",
+          "6.2 Model Variations"
+        ],
+        "reranker_score": 0.9108710560815447
+      },
+      {
+        "chunk_id": "attention_text_19",
+        "content_type": "text",
+        "page_start": 8,
+        "page_end": 9,
+        "section_path": [
+          "6 Results",
+          "6.2 Model Variations"
+        ],
+        "reranker_score": 0.4285895621351454
+      },
+      {
+        "chunk_id": "attention_figure_0",
+        "content_type": "figure",
+        "page_start": 3,
+        "page_end": 3,
+        "section_path": [
+          "3 Model Architecture"
+        ],
+        "reranker_score": 0.3427927136789537
+      },
+      {
+        "chunk_id": "attention_text_1",
+        "content_type": "text",
+        "page_start": 2,
+        "page_end": 2,
+        "section_path": [
+          "1 Introduction"
+        ],
+        "reranker_score": 0.32590525461746694
+      },
+      {
+        "chunk_id": "attention_text_2",
+        "content_type": "text",
+        "page_start": 2,
+        "page_end": 2,
+        "section_path": [
+          "2 Background"
+        ],
+        "reranker_score": 0.2533608446627195
+      }
+    ]
+  },
+  {
+    "query": "Which attention heads appear to perform anaphora resolution?",
+    "answer": "The attention heads that appear to perform anaphora resolution are attention heads 5 and 6, as shown in Figure 4 (Section: APPENDIX, Page: 14-14).",
+    "sources": [
+      {
+        "chunk_id": "attention_figure_4",
+        "content_type": "figure",
+        "page_start": 14,
+        "page_end": 14,
+        "section_path": [
+          "APPENDIX"
+        ],
+        "reranker_score": 0.8863239733428475
+      },
+      {
+        "chunk_id": "attention_figure_6",
+        "content_type": "figure",
+        "page_start": 15,
+        "page_end": 15,
+        "section_path": [
+          "APPENDIX"
+        ],
+        "reranker_score": 0.017472051651835938
+      },
+      {
+        "chunk_id": "attention_text_2",
+        "content_type": "text",
+        "page_start": 2,
+        "page_end": 2,
+        "section_path": [
+          "2 Background"
+        ],
+        "reranker_score": 0.008152253247386628
+      },
+      {
+        "chunk_id": "attention_text_7",
+        "content_type": "text",
+        "page_start": 4,
+        "page_end": 5,
+        "section_path": [
+          "3 Model Architecture",
+          "3.2 Attention",
+          "3.2.2 Multi-Head Attention"
+        ],
+        "reranker_score": 0.005160587622699618
+      },
+      {
+        "chunk_id": "attention_text_19",
+        "content_type": "text",
+        "page_start": 8,
+        "page_end": 9,
+        "section_path": [
+          "6 Results",
+          "6.2 Model Variations"
+        ],
+        "reranker_score": 0.0051155247451094305
+      }
+    ]
+  },
+  {
+    "query": "What is the computational complexity of self-attention?",
+    "answer": "The computational complexity of self-attention is O(n^2 · d), where n is the sequence length and d is the representation dimension. This is shown in Table 1, which compares the maximum path lengths, per-layer complexity, and minimum number of sequential operations for different layer types. Specifically, the row for self-attention lists the complexity as O(n^2 · d) and the sequential operations as O(1).",
+    "sources": [
+      {
+        "chunk_id": "attention_text_12",
+        "content_type": "text",
+        "page_start": 6,
+        "page_end": 7,
+        "section_path": [
+          "4 Why Self-Attention"
+        ],
+        "reranker_score": 0.9808108001426458
+      },
+      {
+        "chunk_id": "attention_text_2",
+        "content_type": "text",
+        "page_start": 2,
+        "page_end": 2,
+        "section_path": [
+          "2 Background"
+        ],
+        "reranker_score": 0.5663356550001658
+      },
+      {
+        "chunk_id": "attention_table_0",
+        "content_type": "table",
+        "page_start": 6,
+        "page_end": 6,
+        "section_path": [
+          "4 Why Self-Attention"
+        ],
+        "reranker_score": 0.4287317448534964
+      },
+      {
+        "chunk_id": "attention_text_4",
+        "content_type": "text",
+        "page_start": 3,
+        "page_end": 3,
+        "section_path": [
+          "3 Model Architecture",
+          "3.1 Encoder and Decoder Stacks"
+        ],
+        "reranker_score": 0.05268439608200291
+      },
+      {
+        "chunk_id": "attention_figure_3",
+        "content_type": "figure",
+        "page_start": 13,
+        "page_end": 13,
+        "section_path": [
+          "APPENDIX"
+        ],
+        "reranker_score": 0.012685304399299817
+      }
+    ]
+  }
+]
