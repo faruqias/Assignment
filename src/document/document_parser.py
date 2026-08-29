@@ -1,13 +1,11 @@
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Optional
-
+from typing import Any, List, Optional
 import json
-import re
+from pathlib import Path
 
 
 # ============================================================
-# DATA MODEL
+# NORMALIZED DOCUMENT ELEMENT
 # ============================================================
 
 @dataclass
@@ -15,21 +13,25 @@ class Element:
 
     element_type: str
 
-    index: int
-
     text: str = ""
 
-    item: Optional[dict] = None
+    level: int = 0
 
-    section_path: list[str] = field(
-        default_factory=list
-    )
+    ref: Optional[str] = None
 
     page_start: Optional[int] = None
 
     page_end: Optional[int] = None
 
-    document_part: str = "main"
+    section_path: List[str] = field(
+        default_factory=list
+    )
+
+    caption: Optional[str] = None
+
+    metadata: dict = field(
+        default_factory=dict
+    )
 
 
 # ============================================================
@@ -37,824 +39,924 @@ class Element:
 # ============================================================
 
 class DocumentParser:
-
     """
-    Converts Docling document.json into normalized elements.
+    Converts a live Docling Document into a list
+    of normalized Element objects.
 
-    Responsibilities:
+    Input:
 
-        document.json
-              ↓
-        Docling tree traversal
-              ↓
-        text
-        headings
-        tables
-        pictures
-              ↓
-        normalized Element objects
+        Docling Document
 
-    This class does NOT perform:
+    Output:
 
-        - chunking
-        - embeddings
-        - FAISS indexing
-        - BM25
-        - RRF
-        - reranking
-        - LLM generation
+        List[Element]
     """
-
-    # ========================================================
-    # INITIALIZATION
-    # ========================================================
 
     def __init__(self):
 
-        self.document_order = 0
+        print(
+            "DocumentParser initialized."
+        )
 
     # ========================================================
     # PUBLIC API
     # ========================================================
 
-    def parse(self, document_json):
+    def parse(self, document) -> List[Element]:
 
-        """
-        Parse a Docling document JSON.
+        if document is None:
+            raise ValueError(
+                "Document cannot be None."
+            )
 
-        Parameters
-        ----------
-        document_json:
-            Can be either:
+        print()
+        print("=" * 70)
+        print("DOCUMENT PARSER")
+        print("=" * 70)
 
-            - Path
-            - str path
-            - loaded dict
+        # --------------------------------------------------------
+        # JSON file path
+        # --------------------------------------------------------
 
-        Returns
-        -------
-        list[Element]
-        """
+        if isinstance(
+            document,
+            (str, Path)
+        ):
 
-        root = self._load_document(
-            document_json
-        )
+            print(
+                f"Loading JSON: {document}"
+            )
 
-        self.document_order = 0
+            path = Path(document)
 
-        elements = self._parse_elements(
-            root
-        )
+            if not path.exists():
+                raise FileNotFoundError(
+                    f"Document JSON not found: {path}"
+                )
 
+            with path.open(
+                "r",
+                encoding="utf-8"
+            ) as f:
+
+                data = json.load(f)
+
+            elements = self._parse_json(
+                data
+            )
+
+        # --------------------------------------------------------
+        # JSON dictionary
+        # --------------------------------------------------------
+
+        elif isinstance(
+            document,
+            dict
+        ):
+
+            print(
+                "Parsing JSON dictionary..."
+            )
+
+            elements = self._parse_json(
+                document
+            )
+
+        # --------------------------------------------------------
+        # Live Docling Document
+        # --------------------------------------------------------
+
+        elif hasattr(
+            document,
+            "iterate_items"
+        ):
+
+            print(
+                "Parsing live Docling document..."
+            )
+
+            elements = (
+                self._parse_docling_document(
+                    document
+                )
+            )
+
+        # --------------------------------------------------------
+        # Element list
+        # --------------------------------------------------------
+
+        elif isinstance(
+            document,
+            list
+        ):
+
+            print(
+                "Parsing element list..."
+            )
+
+            elements = (
+                self._parse_element_list(
+                    document
+                )
+            )
+
+        else:
+
+            raise TypeError(
+                "Unsupported document type: "
+                f"{type(document)}"
+            )
+
+        print()
         print(
             f"Parsed elements: {len(elements)}"
+        )
+
+        self._print_summary(
+            elements
         )
 
         return elements
 
     # ========================================================
-    # LOAD DOCUMENT
+    # DOCling DOCUMENT
     # ========================================================
 
-    def _load_document(
+    def _parse_docling_document(
         self,
-        document_json
-    ):
+        document
+    ) -> List[Element]:
 
-        if isinstance(
-            document_json,
-            dict
-        ):
+        elements = []
 
-            return document_json
+        section_stack = []
 
-        path = Path(
-            document_json
-        )
+        for item, level in document.iterate_items():
 
-        if not path.exists():
-
-            raise FileNotFoundError(
-                f"Document JSON not found: {path}"
+            item_type = (
+                item.__class__.__name__
             )
 
-        with open(
-            path,
-            "r",
-            encoding="utf-8"
-        ) as f:
+            # ------------------------------------------------
+            # Text
+            # ------------------------------------------------
 
-            return json.load(f)
-
-    # ========================================================
-    # CLEAN TEXT
-    # ========================================================
-
-    @staticmethod
-    def clean_text(
-        text: str
-    ) -> str:
-
-        if not text:
-
-            return ""
-
-        text = text.replace(
-            "\u00a0",
-            " "
-        )
-
-        text = re.sub(
-            r"[ \t]+",
-            " ",
-            text
-        )
-
-        text = re.sub(
-            r"\n{3,}",
-            "\n\n",
-            text
-        )
-
-        return text.strip()
-
-    # ========================================================
-    # RESOLVE DOCLING REFERENCE
-    # ========================================================
-
-    def resolve_ref(
-        self,
-        root: dict,
-        ref: str
-    ):
-
-        if not ref:
-
-            return None
-
-        if not ref.startswith("#/"):
-
-            return None
-
-        current = root
-
-        for part in ref[2:].split("/"):
-
-            if isinstance(
-                current,
-                list
-            ):
-
-                try:
-
-                    current = current[
-                        int(part)
-                    ]
-
-                except (
-                    ValueError,
-                    IndexError
-                ):
-
-                    return None
-
-            elif isinstance(
-                current,
-                dict
-            ):
-
-                current = current.get(
-                    part
-                )
-
-            else:
-
-                return None
-
-            if current is None:
-
-                return None
-
-        return current
-
-    # ========================================================
-    # PAGE EXTRACTION
-    # ========================================================
-
-    def get_pages(
-        self,
-        item: dict
-    ):
-
-        pages = []
-
-        for prov in item.get(
-            "prov",
-            []
-        ):
-
-            page = prov.get(
-                "page_no"
-            )
-
-            if page is not None:
-
-                pages.append(
-                    page
-                )
-
-        return sorted(
-            set(pages)
-        )
-
-    # ========================================================
-    # ITEM TEXT
-    # ========================================================
-
-    def get_item_text(
-        self,
-        item: dict
-    ) -> str:
-
-        return self.clean_text(
-            item.get(
+            text = getattr(
+                item,
                 "text",
                 ""
             )
-        )
+
+            if text is None:
+                text = ""
+
+            text = str(text).strip()
+
+            # ------------------------------------------------
+            # Reference
+            # ------------------------------------------------
+
+            ref = getattr(
+                item,
+                "self_ref",
+                None
+            )
+
+            if ref is not None:
+                ref = str(ref)
+
+            # ------------------------------------------------
+            # Page information
+            # ------------------------------------------------
+
+            page_start, page_end = (
+                self._get_page_range(
+                    item
+                )
+            )
+
+            # ------------------------------------------------
+            # Caption
+            # ------------------------------------------------
+
+            caption = (
+                self._get_caption(
+                    item
+                )
+            )
+
+            # ------------------------------------------------
+            # Section handling
+            # ------------------------------------------------
+
+            section_path = list(
+                section_stack
+            )
+
+            if self._is_heading(
+                item_type
+            ):
+
+                if text:
+
+                    # Remove deeper sections
+                    section_stack = (
+                        section_stack[:level]
+                    )
+
+                    section_stack.append(
+                        text
+                    )
+
+                    section_path = list(
+                        section_stack
+                    )
+
+            # ------------------------------------------------
+            # Ignore empty structural items
+            # ------------------------------------------------
+
+            if (
+                not text
+                and not caption
+                and not self._is_picture(
+                    item_type
+                )
+                and not self._is_table(
+                    item_type
+                )
+            ):
+
+                continue
+
+            # ------------------------------------------------
+            # Create normalized element
+            # ------------------------------------------------
+
+            element = Element(
+
+                element_type=item_type,
+
+                text=text,
+
+                level=level,
+
+                ref=ref,
+
+                page_start=page_start,
+
+                page_end=page_end,
+
+                section_path=section_path,
+
+                caption=caption,
+
+                metadata={
+                    "docling_type": item_type
+                }
+            )
+
+            elements.append(
+                element
+            )
+
+        return elements
 
     # ========================================================
-    # WALK DOCLING TREE
+    # ELEMENT LIST
     # ========================================================
 
-    def walk_docling_tree(
+    def _parse_element_list(
         self,
-        root,
-        children
+        document
+    ) -> List[Element]:
+
+        elements = []
+
+        for item in document:
+
+            if isinstance(
+                item,
+                Element
+            ):
+
+                elements.append(
+                    item
+                )
+
+                continue
+
+            if not isinstance(
+                item,
+                dict
+            ):
+
+                continue
+
+            element = Element(
+
+                element_type=item.get(
+                    "element_type",
+                    item.get(
+                        "type",
+                        "Unknown"
+                    )
+                ),
+
+                text=item.get(
+                    "text",
+                    ""
+                ),
+
+                level=item.get(
+                    "level",
+                    0
+                ),
+
+                ref=item.get(
+                    "ref"
+                ),
+
+                page_start=item.get(
+                    "page_start"
+                ),
+
+                page_end=item.get(
+                    "page_end"
+                ),
+
+                section_path=item.get(
+                    "section_path",
+                    []
+                ),
+
+                caption=item.get(
+                    "caption"
+                ),
+
+                metadata=item.get(
+                    "metadata",
+                    {}
+                )
+            )
+
+            elements.append(
+                element
+            )
+
+        return elements
+
+    # ========================================================
+    # PAGE RANGE
+    # ========================================================
+
+    def _get_page_range(
+        self,
+        item
     ):
 
-        """
-        Flatten the complete Docling document tree.
+        prov = getattr(
+            item,
+            "prov",
+            None
+        )
 
-        Groups can contain:
+        if not prov:
 
-            - text
-            - headings
-            - pictures
-            - tables
-        """
+            return None, None
 
-        for child in children:
+        pages = []
 
-            ref = child.get(
-                "$ref"
-            )
+        try:
 
-            if not ref:
+            for provenance in prov:
 
-                continue
-
-            item = self.resolve_ref(
-                root,
-                ref
-            )
-
-            if not item:
-
-                continue
-
-            label = item.get(
-                "label",
-                ""
-            )
-
-            # ------------------------------------------------
-            # Nested group
-            # ------------------------------------------------
-
-            if label == "group":
-
-                nested_children = (
-                    item.get(
-                        "children",
-                        []
-                    )
+                page_no = getattr(
+                    provenance,
+                    "page_no",
+                    None
                 )
 
-                yield from (
-                    self.walk_docling_tree(
-                        root,
-                        nested_children
+                if page_no is not None:
+
+                    pages.append(
+                        int(page_no)
                     )
-                )
 
-            else:
+        except Exception:
 
-                yield item
+            return None, None
 
-    # ========================================================
-    # HEADING DETECTION
-    # ========================================================
+        if not pages:
 
-    def is_numbered_heading(
-        self,
-        title: str
-    ) -> bool:
-
-        return bool(
-            re.match(
-                r"^\d+(?:\.\d+)*\s+",
-                title.strip()
-            )
-        )
-
-    # ========================================================
-    # HEADING DEPTH
-    # ========================================================
-
-    def heading_depth(
-        self,
-        title: str
-    ) -> int:
-
-        match = re.match(
-            r"^(\d+(?:\.\d+)*)\s+",
-            title.strip()
-        )
-
-        if not match:
-
-            return 1
-
-        return len(
-            match.group(1).split(".")
-        )
-
-    # ========================================================
-    # REFERENCES
-    # ========================================================
-
-    def is_references_heading(
-        self,
-        title: str
-    ) -> bool:
+            return None, None
 
         return (
-            self.clean_text(
-                title
-            ).lower()
+            min(pages),
+            max(pages)
+        )
+
+    # ========================================================
+    # CAPTION
+    # ========================================================
+
+    def _get_caption(
+        self,
+        item
+    ):
+
+        captions = getattr(
+            item,
+            "captions",
+            None
+        )
+
+        if not captions:
+
+            return None
+
+        values = []
+
+        try:
+
+            for caption in captions:
+
+                text = getattr(
+                    caption,
+                    "text",
+                    None
+                )
+
+                if text:
+
+                    values.append(
+                        str(text).strip()
+                    )
+
+                elif isinstance(
+                    caption,
+                    str
+                ):
+
+                    values.append(
+                        caption.strip()
+                    )
+
+        except Exception:
+
+            return None
+
+        if not values:
+
+            return None
+
+        return " ".join(
+            values
+        )
+
+    def _resolve_ref(
+        self,
+        root,
+        ref
+    ):
+
+        if not ref.startswith(
+            "#/"
+        ):
+            return None
+
+        parts = ref[2:].split(
+            "/"
+        )
+
+        if len(parts) != 2:
+            return None
+
+        collection = parts[0]
+
+        try:
+            index = int(
+                parts[1]
+            )
+        except ValueError:
+            return None
+
+        values = root.get(
+            collection,
+            []
+        )
+
+        if (
+            index < 0
+            or index >= len(values)
+        ):
+            return None
+
+        return values[index]
+
+        # ========================================================
+    # JSON ITEM -> NORMALIZED ELEMENT
+    # ========================================================
+
+    def _json_item_to_element(
+        self,
+        root,
+        item,
+        ref,
+        level,
+        section_stack
+    ):
+
+        if not isinstance(item, dict):
+            return None
+
+        # ----------------------------------------------------
+        # Determine element type
+        # ----------------------------------------------------
+
+        if ref.startswith("#/texts/"):
+            item_type = item.get(
+                "label",
+                "TextItem"
+            )
+
+        elif ref.startswith("#/tables/"):
+            item_type = "TableItem"
+
+        elif ref.startswith("#/pictures/"):
+            item_type = "PictureItem"
+
+        else:
+            item_type = item.get(
+                "label",
+                "Unknown"
+            )
+
+        # ----------------------------------------------------
+        # Extract text
+        # ----------------------------------------------------
+
+        text = item.get(
+            "text",
+            ""
+        )
+
+        if text is None:
+            text = ""
+
+        text = str(text).strip()
+
+        # ----------------------------------------------------
+        # Extract page information
+        # ----------------------------------------------------
+
+        page_start = None
+        page_end = None
+
+        prov = item.get(
+            "prov",
+            []
+        )
+
+        pages = []
+
+        if isinstance(prov, list):
+
+            for provenance in prov:
+
+                if not isinstance(
+                    provenance,
+                    dict
+                ):
+                    continue
+
+                page_no = provenance.get(
+                    "page_no"
+                )
+
+                if page_no is not None:
+
+                    try:
+                        pages.append(
+                            int(page_no)
+                        )
+                    except (
+                        TypeError,
+                        ValueError
+                    ):
+                        pass
+
+        if pages:
+
+            page_start = min(pages)
+            page_end = max(pages)
+
+        # ----------------------------------------------------
+        # Caption
+        # ----------------------------------------------------
+
+        caption = None
+
+        captions = item.get(
+            "captions"
+        )
+
+        if captions:
+
+            caption_values = []
+
+            for caption_item in captions:
+
+                if isinstance(
+                    caption_item,
+                    str
+                ):
+
+                    caption_values.append(
+                        caption_item.strip()
+                    )
+
+                elif isinstance(
+                    caption_item,
+                    dict
+                ):
+
+                    caption_text = caption_item.get(
+                        "text",
+                        ""
+                    )
+
+                    if caption_text:
+
+                        caption_values.append(
+                            str(
+                                caption_text
+                            ).strip()
+                        )
+
+            if caption_values:
+
+                caption = " ".join(
+                    caption_values
+                )
+
+        # ----------------------------------------------------
+        # Heading / section handling
+        # ----------------------------------------------------
+
+        current_section = list(
+            section_stack
+        )
+
+        is_heading = (
+            item.get("label")
             in {
-                "references",
-                "bibliography",
-                "references and bibliography"
+                "section_header",
+                "title",
+                "heading",
             }
         )
 
-    # ========================================================
-    # APPENDIX
-    # ========================================================
+        if is_heading and text:
 
-    def is_appendix_heading(
-        self,
-        title: str
-    ) -> bool:
+            if level < len(
+                section_stack
+            ):
 
-        normalized = self.clean_text(
-            title
-        ).lower()
+                section_stack[:] = (
+                    section_stack[:level]
+                )
 
-        return (
-            normalized == "appendix"
-            or normalized.startswith(
-                "appendix "
+            section_stack.append(
+                text
             )
-            or normalized.startswith(
-                "appendix:"
+
+            current_section = list(
+                section_stack
             )
-        )
 
-    # ========================================================
-    # UPDATE SECTION PATH
-    # ========================================================
+        # ----------------------------------------------------
+        # Ignore empty items
+        # ----------------------------------------------------
 
-    def update_section_path(
-        self,
-        current_path,
-        title
-    ):
-
-        title = self.clean_text(
-            title
-        )
-
-        if not self.is_numbered_heading(
-            title
+        if (
+            not text
+            and not caption
+            and item_type != "PictureItem"
+            and item_type != "TableItem"
         ):
 
-            return current_path
+            return None
 
-        depth = self.heading_depth(
-            title
+        # ----------------------------------------------------
+        # Create normalized Element
+        # ----------------------------------------------------
+
+        return Element(
+
+            element_type=item_type,
+
+            text=text,
+
+            level=level,
+
+            ref=ref,
+
+            page_start=page_start,
+
+            page_end=page_end,
+
+            section_path=current_section,
+
+            caption=caption,
+
+            metadata={
+                "docling_type": item_type,
+                "json_ref": ref,
+                "label": item.get(
+                    "label"
+                )
+            }
         )
 
-        return (
-            current_path[
-                :depth - 1
-            ]
-            + [title]
-        )
+    def _parse_json(self, root) -> List[Element]:
 
-    # ========================================================
-    # DOCUMENT MARKER
-    # ========================================================
-
-    def is_document_marker(
-        self,
-        item: dict,
-        predicate
-    ) -> bool:
-
-        label = str(
-            item.get(
-                "label",
-                ""
+        if not isinstance(root, dict):
+            raise TypeError(
+                "Expected JSON dictionary."
             )
-        ).lower()
-
-        if label not in {
-            "section_header",
-            "text",
-            "paragraph",
-            "list_item",
-        }:
-
-            return False
-
-        return predicate(
-            self.get_item_text(
-                item
-            )
-        )
-
-    # ========================================================
-    # PARSE ELEMENTS
-    # ========================================================
-
-    def _parse_elements(
-        self,
-        root
-    ):
 
         body = root.get(
             "body",
             {}
         )
 
-        body_children = body.get(
+        children = body.get(
             "children",
             []
         )
 
-        raw_items = list(
-            self.walk_docling_tree(
-                root,
-                body_children
-            )
-        )
-
         print(
-            f"Flattened Docling items: "
-            f"{len(raw_items)}"
+            f"Docling tree children: "
+            f"{len(children)}"
         )
 
         elements = []
 
-        section_path = []
+        section_stack = []
 
-        document_part = "main"
+        def walk(
+            nodes,
+            level=0
+        ):
 
-        for item in raw_items:
+            for node in nodes:
 
-            label = str(
-                item.get(
-                    "label",
-                    ""
-                )
-            ).lower()
-
-            title = self.get_item_text(
-                item
-            )
-
-            # =================================================
-            # APPENDIX FALLBACK
-            # =================================================
-
-            item_pages = self.get_pages(
-                item
-            )
-
-            if (
-                item_pages
-                and min(item_pages) >= 13
-                and document_part != "appendix"
-            ):
-
-                document_part = "appendix"
-
-                section_path = [
-                    "APPENDIX"
-                ]
-
-            # =================================================
-            # REFERENCES MARKER
-            # =================================================
-
-            if self.is_document_marker(
-                item,
-                self.is_references_heading
-            ):
-
-                document_part = "references"
-
-                section_path = []
-
-                self.document_order += 1
-
-                continue
-
-            # =================================================
-            # APPENDIX MARKER
-            # =================================================
-
-            if self.is_document_marker(
-                item,
-                self.is_appendix_heading
-            ):
-
-                document_part = "appendix"
-
-                section_path = [
-                    "APPENDIX"
-                ]
-
-                self.document_order += 1
-
-                continue
-
-            # =================================================
-            # TEXT
-            # =================================================
-
-            if label in {
-                "text",
-                "paragraph",
-                "list_item"
-            }:
-
-                # References text is ignored.
-                if document_part == "references":
-
-                    self.document_order += 1
-
+                if not isinstance(
+                    node,
+                    dict
+                ):
                     continue
 
-                if title:
+                ref = node.get(
+                    "$ref"
+                )
+
+                if not ref:
+                    continue
+
+                item = self._resolve_ref(
+                    root,
+                    ref
+                )
+
+                if not item:
+                    continue
+
+                element = self._json_item_to_element(
+                    root,
+                    item,
+                    ref,
+                    level,
+                    section_stack
+                )
+
+                if element:
 
                     elements.append(
-                        self._create_element(
-                            element_type="text",
-                            item=item,
-                            text=title,
-                            section_path=section_path,
-                            document_part=document_part
-                        )
+                        element
                     )
 
-                self.document_order += 1
+                # ----------------------------------------------
+                # Process children recursively
+                # ----------------------------------------------
 
-                continue
-
-            # =================================================
-            # SECTION HEADER
-            # =================================================
-
-            if label == "section_header":
-
-                if not title:
-
-                    self.document_order += 1
-
-                    continue
-
-                if document_part == "references":
-
-                    self.document_order += 1
-
-                    continue
-
-                if self.is_numbered_heading(
-                    title
-                ):
-
-                    section_path = (
-                        self.update_section_path(
-                            section_path,
-                            title
-                        )
-                    )
-
-                elements.append(
-                    self._create_element(
-                        element_type="heading",
-                        item=item,
-                        text=title,
-                        section_path=section_path,
-                        document_part=document_part
-                    )
+                child_nodes = item.get(
+                    "children",
+                    []
                 )
 
-                self.document_order += 1
+                if child_nodes:
 
-                continue
-
-            # =================================================
-            # TABLE
-            # =================================================
-
-            if label == "table":
-
-                elements.append(
-                    self._create_element(
-                        element_type="table",
-                        item=item,
-                        section_path=section_path,
-                        document_part=document_part
+                    walk(
+                        child_nodes,
+                        level + 1
                     )
-                )
 
-                self.document_order += 1
-
-                continue
-
-            # =================================================
-            # PICTURE
-            # =================================================
-
-            if label == "picture":
-
-                elements.append(
-                    self._create_element(
-                        element_type="picture",
-                        item=item,
-                        section_path=section_path,
-                        document_part=document_part
-                    )
-                )
-
-                self.document_order += 1
-
-                continue
-
-            self.document_order += 1
+        walk(
+            children
+        )
 
         return elements
 
     # ========================================================
-    # CREATE ELEMENT
+    # TYPE HELPERS
     # ========================================================
 
-    def _create_element(
+    @staticmethod
+    def _is_heading(
+        item_type
+    ):
+
+        return item_type in {
+            "SectionHeaderItem",
+            "TitleItem",
+            "HeadingItem",
+        }
+
+    @staticmethod
+    def _is_picture(
+        item_type
+    ):
+
+        return item_type in {
+            "PictureItem",
+        }
+
+    @staticmethod
+    def _is_table(
+        item_type
+    ):
+
+        return item_type in {
+            "TableItem",
+        }
+
+    # ========================================================
+    # SUMMARY
+    # ========================================================
+
+    def _print_summary(
         self,
-        element_type,
-        item,
-        section_path,
-        document_part,
-        text=""
+        elements
     ):
 
-        pages = self.get_pages(
-            item
-        )
-
-        return Element(
-
-            element_type=element_type,
-
-            index=self.document_order,
-
-            text=text,
-
-            item=(
-                item
-                if element_type
-                in {
-                    "table",
-                    "picture"
-                }
-                else None
-            ),
-
-            section_path=(
-                section_path.copy()
-            ),
-
-            page_start=(
-                min(pages)
-                if pages
-                else None
-            ),
-
-            page_end=(
-                max(pages)
-                if pages
-                else None
-            ),
-
-            document_part=document_part
-        )
-
-
-# ============================================================
-# TEST
-# ============================================================
-
-if __name__ == "__main__":
-
-    parser = DocumentParser()
-
-    document_path = Path(
-        "data/extracted/attention/document.json"
-    )
-
-    elements = parser.parse(
-        document_path
-    )
-
-    print()
-    print("=" * 60)
-    print("DOCUMENT PARSER TEST")
-    print("=" * 60)
-
-    print(
-        f"Total elements: {len(elements)}"
-    )
-
-    counts = {}
-
-    for element in elements:
-
-        counts[
-            element.element_type
-        ] = (
-            counts.get(
-                element.element_type,
-                0
-            )
-            + 1
-        )
-
-    print()
-
-    for element_type, count in (
-        counts.items()
-    ):
-
-        print(
-            f"{element_type:<12}: {count}"
-        )
-
-    print()
-    print("First 10 elements")
-    print("-" * 60)
-
-    for element in elements[:10]:
-
-        print(
-            f"Index   : {element.index}"
-        )
-
-        print(
-            f"Type    : "
-            f"{element.element_type}"
-        )
-
-        print(
-            f"Page    : "
-            f"{element.page_start}-"
-            f"{element.page_end}"
-        )
-
-        print(
-            f"Section : "
-            f"{' > '.join(element.section_path)}"
-        )
-
-        if element.text:
+        if not elements:
 
             print(
-                f"Text    : "
-                f"{element.text[:100]}"
+                "No document elements found."
+            )
+
+            return
+
+        counts = {}
+
+        for element in elements:
+
+            key = element.element_type
+
+            counts[key] = (
+                counts.get(
+                    key,
+                    0
+                )
+                + 1
             )
 
         print()
+        print(
+            "Element distribution:"
+        )
+
+        for element_type, count in sorted(
+            counts.items()
+        ):
+
+            print(
+                f"   {element_type:<30} "
+                f"{count}"
+            )
+
+        pages = [
+            element.page_start
+            for element in elements
+            if element.page_start is not None
+        ]
+
+        if pages:
+
+            print()
+            print(
+                f"Pages detected: "
+                f"{min(pages)} - {max(pages)}"
+            )

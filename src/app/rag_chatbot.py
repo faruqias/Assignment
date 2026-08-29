@@ -1,7 +1,11 @@
 import time
 import os
-from dotenv import load_dotenv 
+
+from dotenv import load_dotenv
 import ollama
+
+from src.app.prompt_builder import PromptBuilder
+
 
 # ============================================================
 # ENVIRONMENT
@@ -9,9 +13,38 @@ import ollama
 
 load_dotenv()
 
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL")
-OLLAMA_TEMPERATURE = float(os.getenv("OLLAMA_TEMPERATURE"))
-OLLAMA_MAX_TOKENS = int(os.getenv("OLLAMA_MAX_TOKENS"))
+OLLAMA_MODEL = os.getenv(
+    "OLLAMA_MODEL",
+    "llama3.2:latest"
+)
+
+OLLAMA_TEMPERATURE = float(
+    os.getenv(
+        "OLLAMA_TEMPERATURE",
+        "0.2"
+    )
+)
+
+OLLAMA_MAX_TOKENS = int(
+    os.getenv(
+        "OLLAMA_MAX_TOKENS",
+        "300"
+    )
+)
+
+MAX_CONTEXT_RESULTS = int(
+    os.getenv(
+        "MAX_CONTEXT_RESULTS",
+        "3"
+    )
+)
+
+MAX_CHUNK_CHARS = int(
+    os.getenv(
+        "MAX_CHUNK_CHARS",
+        "3000"
+    )
+)
 
 
 class RAGChatbot:
@@ -19,20 +52,21 @@ class RAGChatbot:
     RAG generation layer.
 
     Responsibilities:
-        1. Build context from retrieved chunks.
-        2. Build a strict document-grounded prompt.
+        1. Build compact context.
+        2. Build document-grounded prompt.
         3. Send prompt to Ollama.
-        4. Stream the generated answer.
+        4. Stream generated answer.
         5. Build source information.
 
-    This class does NOT perform:
+    Does NOT perform:
         - PDF processing
         - Parsing
         - Chunking
         - Embedding
-        - FAISS search
-        - BM25 search
+        - FAISS
+        - BM25
         - RRF
+        - Retrieval
         - Reranking
     """
 
@@ -48,6 +82,8 @@ class RAGChatbot:
 
         self.model = model
 
+        self.prompt_builder = PromptBuilder()
+
         print()
         print("RAG Chatbot")
         print(
@@ -58,10 +94,18 @@ class RAGChatbot:
     # BUILD CONTEXT
     # ========================================================
 
-    def build_context(self, results):
+    def build_context(
+        self,
+        results
+    ):
         """
-        Convert retrieved results into the context
-        supplied to the LLM.
+        Build compact LLM context.
+
+        Only the most relevant reranked results are
+        passed to the LLM.
+
+        Retrieval/reranking metadata is intentionally
+        kept minimal to reduce prompt size.
         """
 
         if not results:
@@ -69,61 +113,48 @@ class RAGChatbot:
 
         context_parts = []
 
+        # ----------------------------------------------------
+        # Only use top reranked results
+        # ----------------------------------------------------
+
+        selected_results = results[
+            :MAX_CONTEXT_RESULTS
+        ]
+
         for rank, result in enumerate(
-            results,
+            selected_results,
             start=1
         ):
 
-            parts = []
-
-            parts.append(
-                f"[Source {rank}]"
+            text = result.get(
+                "text",
+                ""
             )
 
-            # ------------------------------------------------
-            # Content type
-            # ------------------------------------------------
+            if not text:
 
-            content_type = result.get(
-                "content_type"
-            )
-
-            if content_type:
-
-                parts.append(
-                    f"Type: {content_type}"
+                text = result.get(
+                    "page_content",
+                    ""
                 )
 
+            text = str(
+                text
+            ).strip()
+
+            if not text:
+                continue
+
             # ------------------------------------------------
-            # Page
+            # Limit context size
             # ------------------------------------------------
 
-            page_start = result.get(
-                "page_start"
-            )
+            if len(text) > MAX_CHUNK_CHARS:
 
-            page_end = result.get(
-                "page_end"
-            )
-
-            if page_start is not None:
-
-                if (
-                    page_end is not None
-                    and page_end != page_start
-                ):
-
-                    parts.append(
-                        f"Page: "
-                        f"{page_start}-{page_end}"
-                    )
-
-                else:
-
-                    parts.append(
-                        f"Page: "
-                        f"{page_start}"
-                    )
+                text = (
+                    text[:MAX_CHUNK_CHARS]
+                    + "\n[Content truncated]"
+                )
 
             # ------------------------------------------------
             # Section
@@ -134,10 +165,12 @@ class RAGChatbot:
                 []
             )
 
+            section = ""
+
             if section_path:
 
-                parts.append(
-                    "Section: "
+                section = (
+                    "\nSection: "
                     +
                     " > ".join(
                         section_path
@@ -145,120 +178,18 @@ class RAGChatbot:
                 )
 
             # ------------------------------------------------
-            # Caption
+            # Build compact context
             # ------------------------------------------------
-
-            caption = result.get(
-                "caption"
-            )
-
-            if caption:
-
-                parts.append(
-                    "Caption: "
-                    + caption
-                )
-
-            # ------------------------------------------------
-            # Text
-            # ------------------------------------------------
-
-            text = result.get(
-                "text",
-                ""
-            )
-
-            if text:
-
-                parts.append(
-                    "Content:\n"
-                    + text
-                )
 
             context_parts.append(
-                "\n".join(parts)
+                f"[Source {rank}]"
+                f"{section}"
+                f"\n{text}"
             )
 
         return "\n\n".join(
             context_parts
         )
-
-    # ========================================================
-    # BUILD PROMPT
-    # ========================================================
-
-    def build_prompt(
-        self,
-        question,
-        context
-    ):
-        """
-        Build a strict document-grounded prompt.
-
-        The model must answer only from the supplied
-        document context.
-        """
-
-        return f"""
-You are a document question-answering assistant.
-
-Your task is to answer the QUESTION using ONLY the
-DOCUMENT CONTEXT provided below.
-
-STRICT RULES:
-
-1. Use only information contained in the DOCUMENT CONTEXT.
-
-2. Do not use your own knowledge.
-
-3. Do not make assumptions or fill in missing information.
-
-4. Every factual statement must be supported by the
-   DOCUMENT CONTEXT.
-
-5. Do not invent formulas, terminology, examples,
-   numbers, names, or explanations.
-
-6. If the context does not contain enough information
-   to answer the question, respond exactly:
-
-"I couldn't find this information in the uploaded document."
-
-7. If a formula appears in the document context,
-   reproduce it faithfully.
-
-8. Do not create or modify a formula based on your
-   own knowledge.
-
-9. Start directly with the answer.
-
-10. Do not say:
-    - "Here is the answer..."
-    - "Based on my knowledge..."
-    - "According to my knowledge..."
-    - "As an AI..."
-    - "Based on the context..."
-
-11. Keep the answer concise and clear.
-
-12. Use bullet points when appropriate.
-
-13. Mention the relevant page or section when the
-    information is available.
-
-14. Do not mention the retrieval system, FAISS, BM25,
-    RRF, embeddings, reranking, or the RAG pipeline.
-
-QUESTION:
-
-{question}
-
-DOCUMENT CONTEXT:
-
-{context}
-
-ANSWER:
-""".strip()
 
     # ========================================================
     # STREAM
@@ -270,15 +201,14 @@ ANSWER:
         results
     ):
         """
-        Stream the answer from Ollama.
-
-        IMPORTANT:
-        This method yields ONLY the newly generated
-        token/chunk.
-
-        The caller is responsible for accumulating
-        the tokens.
+        Generate and stream a document-grounded answer.
         """
+
+        if not question or not question.strip():
+
+            yield self.FALLBACK_MESSAGE
+
+            return
 
         if not results:
 
@@ -287,7 +217,7 @@ ANSWER:
             return
 
         # ----------------------------------------------------
-        # Build context
+        # Build compact context
         # ----------------------------------------------------
 
         context = self.build_context(
@@ -304,13 +234,13 @@ ANSWER:
         # Build prompt
         # ----------------------------------------------------
 
-        prompt = self.build_prompt(
+        prompt = self.prompt_builder.build_prompt(
             question=question,
             context=context
         )
 
         # ----------------------------------------------------
-        # Ollama
+        # Diagnostics
         # ----------------------------------------------------
 
         print()
@@ -320,6 +250,11 @@ ANSWER:
 
         print(
             f"Model      : {self.model}"
+        )
+
+        print(
+            f"Results    : "
+            f"{min(len(results), MAX_CONTEXT_RESULTS)}"
         )
 
         print(
@@ -335,6 +270,10 @@ ANSWER:
         start_time = time.perf_counter()
 
         first_token_time = None
+
+        # ----------------------------------------------------
+        # Ollama
+        # ----------------------------------------------------
 
         stream = ollama.chat(
 
@@ -359,19 +298,24 @@ ANSWER:
         )
 
         # ----------------------------------------------------
-        # Stream tokens
+        # Stream response
         # ----------------------------------------------------
 
         for response in stream:
 
             token = (
                 response
-                .get("message", {})
-                .get("content", "")
+                .get(
+                    "message",
+                    {}
+                )
+                .get(
+                    "content",
+                    ""
+                )
             )
 
             if not token:
-
                 continue
 
             if first_token_time is None:
@@ -386,8 +330,6 @@ ANSWER:
                     f"{first_token_time:.3f} sec"
                 )
 
-            # IMPORTANT:
-            # Return ONLY the new token.
             yield token
 
         # ----------------------------------------------------
@@ -414,7 +356,7 @@ ANSWER:
         results
     ):
         """
-        Generate a complete non-streaming answer.
+        Generate a complete answer.
         """
 
         answer = ""
@@ -438,10 +380,12 @@ ANSWER:
     ):
         """
         Build readable source information.
+
+        Source generation is independent from the
+        compact LLM context.
         """
 
         if not results:
-
             return ""
 
         sources = []
@@ -479,7 +423,6 @@ ANSWER:
             )
 
             if key in seen:
-
                 continue
 
             seen.add(key)

@@ -2,7 +2,7 @@ from pathlib import Path
 import json
 import re
 
-from document_parser import DocumentParser, Element
+from src.document.document_parser import DocumentParser, Element
 
 
 class StructureChunker:
@@ -418,8 +418,10 @@ class StructureChunker:
                         element.page_end
                     )
 
-                    text_document_part = (
-                        element.document_part
+                    text_document_part = getattr(
+                        element,
+                        "document_part",
+                        "main"
                     )
 
                 else:
@@ -553,7 +555,6 @@ class StructureChunker:
         item = element.item
 
         if item is None:
-
             return None
 
         caption = self._get_caption(
@@ -574,13 +575,9 @@ class StructureChunker:
 
             "caption": caption,
 
-            "page_start": (
-                element.page_start
-            ),
+            "page_start": element.page_start,
 
-            "page_end": (
-                element.page_end
-            ),
+            "page_end": element.page_end,
 
             "section_path": (
                 element.section_path.copy()
@@ -592,8 +589,10 @@ class StructureChunker:
                 else None
             ),
 
-            "document_part": (
-                element.document_part
+            "document_part": getattr(
+                element,
+                "document_part",
+                "main"
             ),
 
             "token_count": (
@@ -623,7 +622,6 @@ class StructureChunker:
         item = element.item
 
         if item is None:
-
             return None
 
         caption = self._get_caption(
@@ -640,13 +638,9 @@ class StructureChunker:
 
             "caption": caption,
 
-            "page_start": (
-                element.page_start
-            ),
+            "page_start": element.page_start,
 
-            "page_end": (
-                element.page_end
-            ),
+            "page_end": element.page_end,
 
             "section_path": (
                 element.section_path.copy()
@@ -658,8 +652,10 @@ class StructureChunker:
                 else None
             ),
 
-            "document_part": (
-                element.document_part
+            "document_part": getattr(
+                element,
+                "document_part",
+                "main"
             ),
 
             "token_count": (

@@ -1,158 +1,313 @@
-import json
+from src.document.document_processor import DocumentProcessor
+from src.document.document_parser import DocumentParser
+from src.document.structure_chunker_new import StructureChunker
+from src.document.embedding_service import EmbeddingService
+from src.document.vector_indexer import VectorIndexer
 
-from rag_chatbot import (
-    RAGChatbot
-)
+from src.retriever.bm25_retriever import BM25Retriever
+from src.retriever.rrf_fusion import RRFFusion
+from src.retriever.retriever import Retriever
 
-
-CHUNKS_FILE = (
-    "data/extracted/attention/chunks.json"
-)
-
-
-# ============================================================
-# LOAD CHUNKS
-# ============================================================
-
-with open(
-    CHUNKS_FILE,
-    "r",
-    encoding="utf-8"
-) as f:
-
-    chunks = json.load(f)
+from src.retriever.reranker import BGEReranker
+from src.app.rag_chatbot import RAGChatbot
 
 
-# ============================================================
-# CREATE SAMPLE RESULTS
-# ============================================================
+PDF_PATH = "data/pdfs/attention.pdf"
 
-results = []
-
-for chunk in chunks:
-
-    if chunk.get("chunk_id") == (
-        "attention_text_6"
-    ):
-
-        results.append(
-            {
-                "vector_id": 7,
-
-                "chunk_id": chunk.get(
-                    "chunk_id"
-                ),
-
-                "content_type": chunk.get(
-                    "content_type"
-                ),
-
-                "page_start": chunk.get(
-                    "page_start"
-                ),
-
-                "page_end": chunk.get(
-                    "page_end"
-                ),
-
-                "section_path": chunk.get(
-                    "section_path",
-                    []
-                ),
-
-                "caption": chunk.get(
-                    "caption"
-                ),
-
-                "text": chunk.get(
-                    "text",
-                    ""
-                ),
-
-                "reranker_score": 0.9953
-            }
-        )
-
-        break
+FAISS_PATH = "data/vectorstore/test_attention/index.faiss"
+METADATA_PATH = "data/vectorstore/test_attention/metadata.json"
 
 
-# ============================================================
-# CREATE CHATBOT
-# ============================================================
+def main():
 
-chatbot = RAGChatbot()
+    print("=" * 70)
+    print("RAG CHATBOT TEST")
+    print("=" * 70)
 
+    # =========================================================
+    # 1. PROCESS DOCUMENT
+    # =========================================================
 
-# ============================================================
-# TEST
-# ============================================================
+    print()
+    print("1. Processing document...")
 
-question = (
-    "How does scaled dot-product attention work?"
-)
+    processor = DocumentProcessor()
 
+    result = processor.process(
+        PDF_PATH
+    )
 
-print()
-print("=" * 60)
-print("RAG CHATBOT TEST")
-print("=" * 60)
+    # =========================================================
+    # 2. PARSE
+    # =========================================================
 
-print(
-    f"Question: {question}"
-)
+    print()
+    print("2. Parsing document...")
 
-print()
-print("Generating answer...")
-print()
+    parser = DocumentParser()
 
-
-answer = ""
-
-for token in chatbot.stream(
-    question,
-    results
-):
-
-    answer += token
+    elements = parser.parse(
+        result["json_path"]
+    )
 
     print(
-        token,
-        end="",
-        flush=True
+        f"   Elements: {len(elements)}"
     )
 
-print()
+    # =========================================================
+    # 3. CHUNK
+    # =========================================================
 
+    print()
+    print("3. Building chunks...")
 
-# ============================================================
-# SOURCES
-# ============================================================
+    chunker = StructureChunker()
 
-sources = chatbot.build_sources(
-    results
-)
-
-print("Sources:")
-print(sources)
-
-
-# ============================================================
-# VALIDATION
-# ============================================================
-
-if not answer.strip():
-
-    raise RuntimeError(
-        "Ollama returned an empty answer."
+    chunks = chunker.chunk(
+        elements
     )
 
-print()
-print(
-    "Generated answer length:",
-    len(answer)
-)
+    print(
+        f"   Chunks: {len(chunks)}"
+    )
 
-print()
-print("=" * 60)
-print("RAG CHATBOT VALIDATION PASSED")
-print("=" * 60)
+    if not chunks:
+
+        raise RuntimeError(
+            "No chunks generated."
+        )
+
+    # =========================================================
+    # 4. EMBEDDING SERVICE
+    # =========================================================
+
+    print()
+    print("4. Loading embedding service...")
+
+    embedding = EmbeddingService()
+
+    # =========================================================
+    # 5. GENERATE EMBEDDINGS
+    # =========================================================
+
+    print()
+    print("5. Generating embeddings...")
+
+    embeddings = embedding.embed_documents(
+        chunks
+    )
+
+    print(
+        "   Embedding shape:",
+        embeddings.shape
+    )
+
+    # =========================================================
+    # 6. VECTOR INDEX
+    # =========================================================
+
+    print()
+    print("6. Creating FAISS index...")
+
+    indexer = VectorIndexer(
+        index_path=FAISS_PATH,
+        metadata_path=METADATA_PATH
+    )
+
+    indexer.index_documents(
+        chunks,
+        embeddings
+    )
+
+    indexer.save()
+
+    print(
+        "   Vectors:",
+        indexer.vector_count
+    )
+
+    # =========================================================
+    # 7. BM25
+    # =========================================================
+
+    print()
+    print("7. Creating BM25...")
+
+    bm25 = BM25Retriever(
+        chunks
+    )
+
+    # =========================================================
+    # 8. RRF
+    # =========================================================
+
+    print()
+    print("8. Creating RRF...")
+
+    rrf = RRFFusion()
+
+    # =========================================================
+    # 9. RETRIEVER
+    # =========================================================
+
+    print()
+    print("9. Creating Retriever...")
+
+    retriever = Retriever(
+        indexer=indexer,
+        embedding_service=embedding,
+        bm25_retriever=bm25,
+        rrf_fusion=rrf
+    )
+
+    # =========================================================
+    # 10. RERANKER
+    # =========================================================
+
+    print()
+    print("10. Creating BGE Reranker...")
+
+    reranker = BGEReranker()
+
+    # =========================================================
+    # 11. CHATBOT
+    # =========================================================
+
+    print()
+    print("11. Creating RAG Chatbot...")
+
+    chatbot = RAGChatbot()
+
+    # =========================================================
+    # 12. QUESTION
+    # =========================================================
+
+    question = (
+        "How does scaled dot-product attention work?"
+    )
+
+    print()
+    print("=" * 70)
+    print("QUESTION")
+    print("=" * 70)
+
+    print(question)
+
+    # =========================================================
+    # 13. RETRIEVE
+    # =========================================================
+
+    print()
+    print("Retrieving documents...")
+
+    retrieved_results = retriever.retrieve(
+        question
+    )
+
+    print(
+        f"Retrieved: {len(retrieved_results)}"
+    )
+
+    if not retrieved_results:
+        raise RuntimeError(
+            "Retriever returned no results."
+        )
+
+    # =========================================================
+    # 14. RERANK
+    # =========================================================
+
+    print()
+    print("Reranking documents...")
+
+    reranked_results = reranker.rerank(
+        question,
+        retrieved_results,
+        chunks=chunks
+    )
+
+    print(
+        f"Reranked: {len(reranked_results)}"
+    )
+
+    if not reranked_results:
+        raise RuntimeError(
+            "Reranker returned no results."
+        )
+
+    # =========================================================
+    # 15. GENERATE ANSWER
+    # =========================================================
+
+    print()
+    print("Generating answer...")
+    print()
+
+    answer = ""
+
+    for token in chatbot.stream(
+        question,
+        reranked_results
+    ):
+
+        answer += token
+
+        print(
+            token,
+            end="",
+            flush=True
+        )
+
+    print()
+    print()
+
+    # =========================================================
+    # 16. SOURCES
+    # =========================================================
+
+    print("=" * 70)
+    print("SOURCES")
+    print("=" * 70)
+
+    print(
+        chatbot.build_sources(
+            reranked_results
+        )
+    )
+
+    # =========================================================
+    # 17. VALIDATION
+    # =========================================================
+
+    print()
+    print("=" * 70)
+    print("VALIDATION")
+    print("=" * 70)
+
+    if not answer.strip():
+
+        raise RuntimeError(
+            "RAGChatbot returned empty answer."
+        )
+
+    print(
+        "Answer length :",
+        len(answer)
+    )
+
+    print(
+        "Results       :",
+        len(reranked_results)
+    )
+
+    print()
+    print(
+        "RAG CHATBOT VALIDATION PASSED"
+    )
+
+    print("=" * 70)
+
+
+if __name__ == "__main__":
+
+    main()
