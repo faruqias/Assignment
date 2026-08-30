@@ -1,3 +1,6 @@
+from src.app.ollama_client import OllamaClient
+from src.app.prompt_builder import PromptBuilder
+
 from src.document.document_processor import DocumentProcessor
 from src.document.document_parser import DocumentParser
 from src.document.structure_chunker_new import StructureChunker
@@ -7,8 +10,8 @@ from src.document.vector_indexer import VectorIndexer
 from src.retriever.bm25_retriever import BM25Retriever
 from src.retriever.rrf_fusion import RRFFusion
 from src.retriever.retriever import Retriever
-
 from src.retriever.reranker import BGEReranker
+
 from src.app.rag_chatbot import RAGChatbot
 
 
@@ -72,7 +75,6 @@ def main():
     )
 
     if not chunks:
-
         raise RuntimeError(
             "No chunks generated."
         )
@@ -176,7 +178,17 @@ def main():
     print()
     print("11. Creating RAG Chatbot...")
 
-    chatbot = RAGChatbot()
+    prompt_builder = PromptBuilder()
+
+    llm_client = OllamaClient()
+
+    chatbot = RAGChatbot(
+        retriever=retriever,
+        reranker=reranker,
+        prompt_builder=prompt_builder,
+        llm_client=llm_client,
+        chunks=chunks,
+    )
 
     # =========================================================
     # 12. QUESTION
@@ -194,89 +206,54 @@ def main():
     print(question)
 
     # =========================================================
-    # 13. RETRIEVE
+    # 13. RUN RAG CHATBOT
     # =========================================================
 
     print()
-    print("Retrieving documents...")
+    print("=" * 70)
+    print("RUNNING RAG CHATBOT")
+    print("=" * 70)
 
-    retrieved_results = retriever.retrieve(
+    response = chatbot.ask(
         question
     )
 
-    print(
-        f"Retrieved: {len(retrieved_results)}"
-    )
+    answer = response["answer"]
 
-    if not retrieved_results:
-        raise RuntimeError(
-            "Retriever returned no results."
-        )
+    selected_results = response["results"]
+
+    sources = response["sources"]
 
     # =========================================================
-    # 14. RERANK
+    # 14. ANSWER
     # =========================================================
 
     print()
-    print("Reranking documents...")
+    print("=" * 70)
+    print("ANSWER")
+    print("=" * 70)
 
-    reranked_results = reranker.rerank(
-        question,
-        retrieved_results,
-        chunks=chunks
-    )
-
-    print(
-        f"Reranked: {len(reranked_results)}"
-    )
-
-    if not reranked_results:
-        raise RuntimeError(
-            "Reranker returned no results."
-        )
+    print(answer)
 
     # =========================================================
-    # 15. GENERATE ANSWER
+    # 15. SOURCES
     # =========================================================
 
     print()
-    print("Generating answer...")
-    print()
-
-    answer = ""
-
-    for token in chatbot.stream(
-        question,
-        reranked_results
-    ):
-
-        answer += token
-
-        print(
-            token,
-            end="",
-            flush=True
-        )
-
-    print()
-    print()
-
-    # =========================================================
-    # 16. SOURCES
-    # =========================================================
-
     print("=" * 70)
     print("SOURCES")
     print("=" * 70)
 
-    print(
-        chatbot.build_sources(
-            reranked_results
+    for source in sources:
+
+        print(
+            f"• {source['chunk_id']} | "
+            f"Page {source['page_start']}-"
+            f"{source['page_end']}"
         )
-    )
 
     # =========================================================
-    # 17. VALIDATION
+    # 16. VALIDATION
     # =========================================================
 
     print()
@@ -290,14 +267,37 @@ def main():
             "RAGChatbot returned empty answer."
         )
 
+    if not selected_results:
+
+        raise RuntimeError(
+            "RAGChatbot selected no context results."
+        )
+
+    if len(selected_results) > chatbot.max_context_results:
+
+        raise RuntimeError(
+            "Context result limit exceeded."
+        )
+
+    if len(sources) != len(selected_results):
+
+        raise RuntimeError(
+            "Source propagation mismatch."
+        )
+
     print(
         "Answer length :",
         len(answer)
     )
 
     print(
-        "Results       :",
-        len(reranked_results)
+        "Context used  :",
+        len(selected_results)
+    )
+
+    print(
+        "Sources       :",
+        len(sources)
     )
 
     print()

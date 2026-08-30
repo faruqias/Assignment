@@ -11,45 +11,59 @@ from src.retriever.rrf_fusion import RRFFusion
 from src.retriever.retriever import Retriever
 from src.retriever.reranker import BGEReranker
 
+from src.app.prompt_builder import PromptBuilder
 from src.app.rag_chatbot import RAGChatbot
+
+import ollama
+
+
+class OllamaClient:
+    """
+    Small adapter around the Ollama Python client.
+    """
+
+    def generate(
+        self,
+        prompt,
+        model,
+        temperature,
+        max_tokens,
+    ):
+
+        response = ollama.chat(
+            model=model,
+            messages=[
+                {
+                    "role": "user",
+                    "content": prompt,
+                }
+            ],
+            options={
+                "temperature": temperature,
+                "num_predict": max_tokens,
+            },
+        )
+
+        return response["message"]["content"]
 
 
 class RAGApplication:
     """
-    Main RAG application orchestrator.
+    Application-level orchestration for the RAG system.
 
-    Document ingestion pipeline:
-
-        PDF
-         ↓
-        DocumentProcessor
-         ↓
-        DocumentParser
-         ↓
-        StructureChunker
-         ↓
-        EmbeddingService
-         ↓
-        VectorIndexer
-         ↓
-        BM25Retriever
-
-    Query pipeline:
-
-        Question
-         ↓
-        Retriever
-         ├── Dense / FAISS
-         └── BM25
-              ↓
-            RRF Fusion
-              ↓
-        BGE Reranker
-              ↓
-        RAGChatbot
-              ↓
-           Ollama
+    Responsibilities:
+        - Process uploaded PDFs
+        - Parse documents
+        - Create chunks
+        - Generate embeddings
+        - Build retrieval indexes
+        - Create RAG chatbot
+        - Handle UI requests
     """
+
+    VECTORSTORE_ROOT = Path(
+        "data/vectorstore"
+    )
 
     def __init__(self):
 
@@ -58,640 +72,409 @@ class RAGApplication:
         print("INITIALIZING RAG APPLICATION")
         print("=" * 70)
 
-        # ====================================================
-        # APPLICATION STATE
-        # ====================================================
-
-        self.current_document_id = None
-        self.current_document_name = None
-        self.current_chunks = []
-
-        self.bm25 = None
-        self.rrf = None
-        self.retriever = None
-
-        # ====================================================
+        # =====================================================
         # 1. DOCUMENT PROCESSOR
-        # ====================================================
+        # =====================================================
 
         print()
         print("1. Document Processor")
 
         self.processor = DocumentProcessor()
 
-        # ====================================================
+        # =====================================================
         # 2. DOCUMENT PARSER
-        # ====================================================
+        # =====================================================
 
         print()
         print("2. Document Parser")
 
         self.parser = DocumentParser()
 
-        # ====================================================
+        # =====================================================
         # 3. STRUCTURE CHUNKER
-        # ====================================================
+        # =====================================================
 
         print()
         print("3. Structure Chunker")
 
         self.chunker = StructureChunker()
 
-        # ====================================================
+        # =====================================================
         # 4. EMBEDDING SERVICE
-        # ====================================================
+        # =====================================================
 
         print()
         print("4. Embedding Service")
 
         self.embedding = EmbeddingService()
 
-        # ====================================================
+        # =====================================================
         # 5. VECTOR INDEXER
-        # ====================================================
+        # =====================================================
 
         print()
         print("5. Vector Indexer")
 
-        base_dir = Path(
-            __file__
-        ).resolve().parents[2]
+        # Created per document during upload.
+        self.indexer = None
 
-        vectorstore_dir = (
-            base_dir
-            / "data"
-            / "vectorstore"
-            / "attention"
-        )
-
-        vectorstore_dir.mkdir(
-            parents=True,
-            exist_ok=True
-        )
-
-        self.faiss_path = (
-            vectorstore_dir
-            / "index.faiss"
-        )
-
-        self.metadata_path = (
-            vectorstore_dir
-            / "metadata.json"
-        )
-
-        self.indexer = VectorIndexer(
-            index_path=self.faiss_path,
-            metadata_path=self.metadata_path
-        )
-
-        # ====================================================
-        # 6. RETRIEVER
-        # ====================================================
+        # =====================================================
+        # 6. RERANKER
+        # =====================================================
 
         print()
-        print("6. Retriever")
-
-        # Retriever is initialized after document upload
-        # because BM25Retriever requires chunks.
-
-        # ====================================================
-        # 7. BGE RERANKER
-        # ====================================================
-
-        print()
-        print("7. BGE Reranker")
+        print("6. BGE Reranker")
 
         self.reranker = BGEReranker()
 
-        # ====================================================
-        # 8. RAG CHATBOT
-        # ====================================================
+        # =====================================================
+        # 7. PROMPT BUILDER
+        # =====================================================
 
         print()
-        print("8. RAG Chatbot")
+        print("7. Prompt Builder")
 
-        self.chatbot = RAGChatbot()
+        self.prompt_builder = PromptBuilder()
+
+        # =====================================================
+        # 8. OLLAMA CLIENT
+        # =====================================================
+
+        print()
+        print("8. Ollama Client")
+
+        self.llm_client = OllamaClient()
+
+        # =====================================================
+        # CHATBOT
+        # =====================================================
+
+        self.chatbot = None
+
+        # =====================================================
+        # DOCUMENT STATE
+        # =====================================================
+
+        self.documents = {}
 
         print()
         print("=" * 70)
         print("RAG APPLICATION READY")
         print("=" * 70)
 
-    # ========================================================
-    # UPLOAD DOCUMENT
-    # ========================================================
+    # =========================================================
+    # DOCUMENT UPLOAD
+    # =========================================================
 
-    def upload_document(
-        self,
-        pdf_path
-    ):
+    def upload_documents(self, files):
         """
-        Process, parse, chunk, embed and index a PDF.
+        Process and index uploaded PDF documents.
+
+        Current implementation processes each PDF and creates
+        its own vector store.
 
         Returns:
-            str: upload status message
+            str: UI status message
         """
 
-        if not pdf_path:
+        if not files:
 
-            return (
-                "Please select a PDF document."
-            )
+            return "Please upload at least one PDF document."
 
-        pdf_path = Path(
-            pdf_path
-        )
+        if not isinstance(files, list):
 
-        if not pdf_path.exists():
+            files = [files]
 
-            return (
-                f"PDF file not found: {pdf_path}"
-            )
+        messages = []
 
-        print()
-        print("=" * 70)
-        print("DOCUMENT UPLOAD")
-        print("=" * 70)
+        for file_path in files:
 
-        print(
-            f"PDF: {pdf_path}"
-        )
+            try:
 
-        try:
+                file_path = str(file_path)
 
-            # =================================================
-            # 1. DOCUMENT PROCESSOR
-            # =================================================
+                document_name = Path(
+                    file_path
+                ).name
 
-            print()
-            print(
-                "1. Processing document..."
-            )
+                document_id = Path(
+                    file_path
+                ).stem
 
-            processor_result = (
-                self.processor.process(
-                    str(pdf_path)
+                print()
+                print("=" * 60)
+                print(
+                    f"PROCESSING: {document_name}"
                 )
-            )
+                print("=" * 60)
 
-            if not processor_result:
+                # =================================================
+                # 1. PROCESS DOCUMENT
+                # =================================================
 
-                return (
-                    "Document processing returned no result."
+                result = self.processor.process(
+                    file_path
                 )
 
-            document_id = (
-                processor_result.get(
-                    "document_id"
-                )
-            )
+                # =================================================
+                # 2. PARSE
+                # =================================================
 
-            document_name = (
-                processor_result.get(
-                    "document_name"
-                )
-            )
-
-            json_path = (
-                processor_result.get(
-                    "json_path"
-                )
-            )
-
-            print()
-            print(
-                f"Document ID   : {document_id}"
-            )
-
-            print(
-                f"Document Name : {document_name}"
-            )
-
-            print(
-                f"JSON          : {json_path}"
-            )
-
-            if not json_path:
-
-                return (
-                    "Document processor did not return "
-                    "a JSON path."
+                elements = self.parser.parse(
+                    result["json_path"]
                 )
 
-            # =================================================
-            # 2. DOCUMENT PARSER
-            # =================================================
+                # =================================================
+                # 3. CHUNK
+                # =================================================
 
-            print()
-            print(
-                "2. Parsing document..."
-            )
-
-            # IMPORTANT:
-            #
-            # DocumentParser expects the Docling JSON path.
-            #
-            # Do NOT pass processor_result directly.
-            #
-            elements = self.parser.parse(
-                json_path
-            )
-
-            print(
-                f"   Parsed elements: {len(elements)}"
-            )
-
-            if not elements:
-
-                return (
-                    "No elements were extracted "
-                    "from the document."
+                chunks = self.chunker.chunk(
+                    elements
                 )
 
-            # =================================================
-            # 3. STRUCTURE CHUNKER
-            # =================================================
+                if not chunks:
 
-            print()
-            print(
-                "3. Building chunks..."
-            )
+                    messages.append(
+                        f"{document_name}: no chunks generated."
+                    )
 
-            chunks = self.chunker.chunk(
-                elements
-            )
+                    continue
 
-            print(
-                f"   Chunks: {len(chunks)}"
-            )
+                # =================================================
+                # 4. METADATA
+                # =================================================
 
-            if not chunks:
-
-                return (
-                    "No chunks were generated "
-                    "from the document."
-                )
-
-            # =================================================
-            # 4. ADD DOCUMENT METADATA
-            # =================================================
-
-            print()
-            print(
-                "4. Adding document metadata..."
-            )
-
-            for chunk in chunks:
-
-                if not chunk.get(
-                    "document_id"
-                ):
+                for chunk in chunks:
 
                     chunk["document_id"] = (
                         document_id
                     )
 
-                if not chunk.get(
-                    "document_name"
-                ):
-
                     chunk["document_name"] = (
                         document_name
                     )
 
-            # =================================================
-            # 5. EMBEDDINGS
-            # =================================================
+                # =================================================
+                # 5. EMBEDDINGS
+                # =================================================
 
-            print()
-            print(
-                "5. Generating embeddings..."
-            )
+                embeddings = (
+                    self.embedding.embed_documents(
+                        chunks
+                    )
+                )
 
-            embeddings = (
-                self.embedding.embed_documents(
+                # =================================================
+                # 6. VECTOR INDEX
+                # =================================================
+
+                vectorstore_path = (
+                    self.VECTORSTORE_ROOT
+                    / document_id
+                )
+
+                vectorstore_path.mkdir(
+                    parents=True,
+                    exist_ok=True
+                )
+
+                index_path = (
+                    vectorstore_path
+                    / "index.faiss"
+                )
+
+                metadata_path = (
+                    vectorstore_path
+                    / "metadata.json"
+                )
+
+                indexer = VectorIndexer(
+                    index_path=str(index_path),
+                    metadata_path=str(metadata_path)
+                )
+
+                indexer.index_documents(
+                    chunks,
+                    embeddings
+                )
+
+                indexer.save()
+
+                # =================================================
+                # 7. BM25
+                # =================================================
+
+                bm25 = BM25Retriever(
                     chunks
                 )
-            )
 
-            print(
-                f"   Embedding shape: "
-                f"{embeddings.shape}"
-            )
+                # =================================================
+                # 8. RRF
+                # =================================================
 
-            if len(embeddings) != len(chunks):
+                rrf = RRFFusion()
 
-                raise RuntimeError(
-                    "Embedding count does not match "
-                    "chunk count."
+                # =================================================
+                # 9. RETRIEVER
+                # =================================================
+
+                retriever = Retriever(
+                    indexer=indexer,
+                    embedding_service=self.embedding,
+                    bm25_retriever=bm25,
+                    rrf_fusion=rrf
                 )
 
-            # =================================================
-            # 6. VECTOR INDEX
-            # =================================================
+                # =================================================
+                # SAVE DOCUMENT
+                # =================================================
 
-            print()
-            print(
-                "6. Indexing vectors..."
+                self.documents[document_id] = {
+                    "document_id": document_id,
+                    "document_name": document_name,
+                    "chunks": chunks,
+                    "indexer": indexer,
+                    "bm25": bm25,
+                    "rrf": rrf,
+                    "retriever": retriever,
+                }
+
+                messages.append(
+                    f"✓ {document_name} "
+                    f"({len(chunks)} chunks)"
+                )
+
+            except Exception as exc:
+
+                messages.append(
+                    f"✗ {document_name}: {exc}"
+                )
+
+                print()
+                print(
+                    f"ERROR processing {document_name}:"
+                )
+                print(exc)
+
+        # =========================================================
+        # BUILD ACTIVE CHATBOT
+        # =========================================================
+
+        if self.documents:
+
+            # For now use the latest uploaded document.
+            latest_document = list(
+                self.documents.values()
+            )[-1]
+
+            self.indexer = (
+                latest_document["indexer"]
             )
 
-            self.indexer.index_documents(
-                chunks,
-                embeddings
+            self.chatbot = RAGChatbot(
+                retriever=latest_document["retriever"],
+                reranker=self.reranker,
+                prompt_builder=self.prompt_builder,
+                llm_client=self.llm_client,
+                chunks=chunks
             )
 
-            self.indexer.save()
+        return "\n".join(messages)
 
-            print(
-                f"   FAISS vectors: "
-                f"{self.indexer.vector_count}"
-            )
-
-            # =================================================
-            # 7. BM25
-            # =================================================
-
-            print()
-            print(
-                "7. Building BM25 index..."
-            )
-
-            self.bm25 = BM25Retriever(
-                chunks
-            )
-
-            # =================================================
-            # 8. RRF
-            # =================================================
-
-            print()
-            print(
-                "8. Initializing RRF fusion..."
-            )
-
-            self.rrf = RRFFusion()
-
-            # =================================================
-            # 9. RETRIEVER
-            # =================================================
-
-            print()
-            print(
-                "9. Initializing Retriever..."
-            )
-
-            self.retriever = Retriever(
-
-                indexer=self.indexer,
-
-                embedding_service=self.embedding,
-
-                bm25_retriever=self.bm25,
-
-                rrf_fusion=self.rrf
-            )
-
-            # =================================================
-            # SAVE CURRENT DOCUMENT STATE
-            # =================================================
-
-            self.current_document_id = (
-                document_id
-            )
-
-            self.current_document_name = (
-                document_name
-            )
-
-            self.current_chunks = chunks
-
-            print()
-            print("=" * 70)
-            print("DOCUMENT UPLOAD COMPLETED")
-            print("=" * 70)
-
-            print(
-                f"Document : {document_name}"
-            )
-
-            print(
-                f"Elements : {len(elements)}"
-            )
-
-            print(
-                f"Chunks   : {len(chunks)}"
-            )
-
-            print(
-                f"Vectors  : {len(embeddings)}"
-            )
-
-            return (
-                f"Document uploaded successfully. "
-                f"Chunks: {len(chunks)}"
-            )
-
-        except Exception as ex:
-
-            print()
-            print(
-                "=" * 70
-            )
-            print(
-                "ERROR WHILE PROCESSING DOCUMENT"
-            )
-            print(
-                "=" * 70
-            )
-
-            print(
-                f"{type(ex).__name__}: {ex}"
-            )
-
-            return (
-                f"Error processing document: {ex}"
-            )
-
-    # ========================================================
+    # =========================================================
     # ASK QUESTION
-    # ========================================================
+    # =========================================================
 
     def ask_question(
         self,
-        question,
-        history=None
+        message,
+        history
     ):
         """
-        Retrieve relevant chunks, rerank them and
-        stream the generated answer.
+        Ask a question through the RAG chatbot.
 
-        Yields:
-            tuple[str, list]
+        Gradio 6.x expects message dictionaries.
         """
 
-        if not question or not question.strip():
+        if not message or not message.strip():
 
-            yield (
-                "Please enter a question.",
-                []
+            return history or []
+
+        if self.chatbot is None:
+
+            history = history or []
+
+            history.append(
+                {
+                    "role": "user",
+                    "content": message,
+                }
             )
 
-            return
-
-        if self.retriever is None:
-
-            yield (
-                "Please upload a document before "
-                "asking a question.",
-                []
+            history.append(
+                {
+                    "role": "assistant",
+                    "content": (
+                        "Please upload a PDF document first."
+                    ),
+                }
             )
 
-            return
-
-        question = question.strip()
-
-        print()
-        print("=" * 70)
-        print("RAG QUERY")
-        print("=" * 70)
-
-        print(
-            f"Question: {question}"
-        )
+            return history
 
         try:
 
-            # =================================================
-            # 1. RETRIEVAL
-            # =================================================
+            response = self.chatbot.ask(
+                message
+            )
+
+            answer = response.get(
+                "answer",
+                ""
+            )
+
+            history = history or []
+
+            history.append(
+                {
+                    "role": "user",
+                    "content": message,
+                }
+            )
+
+            history.append(
+                {
+                    "role": "assistant",
+                    "content": answer,
+                }
+            )
+
+            return history
+
+        except Exception as exc:
 
             print()
             print(
-                "1. Retrieving documents..."
+                "ERROR WHILE ANSWERING:"
+            )
+            print(exc)
+
+            history = history or []
+
+            history.append(
+                {
+                    "role": "user",
+                    "content": message,
+                }
             )
 
-            retrieval_results = (
-                self.retriever.retrieve(
-                    question
-                )
+            history.append(
+                {
+                    "role": "assistant",
+                    "content": (
+                        f"Unable to answer the question: {exc}"
+                    ),
+                }
             )
 
-            print(
-                f"   Retrieved: "
-                f"{len(retrieval_results)}"
-            )
-
-            if not retrieval_results:
-
-                print(
-                    "   No relevant documents found."
-                )
-
-                yield (
-                    self.chatbot.FALLBACK_MESSAGE,
-                    []
-                )
-
-                return
-
-            # =================================================
-            # 2. RERANKING
-            # =================================================
-
-            print()
-            print(
-                "2. Reranking..."
-            )
-
-            final_results = (
-                self.reranker.rerank(
-                    question,
-                    retrieval_results,
-                    self.current_chunks
-                )
-            )
-
-            print(
-                f"   Final results: "
-                f"{len(final_results)}"
-            )
-
-            if not final_results:
-
-                yield (
-                    self.chatbot.FALLBACK_MESSAGE,
-                    []
-                )
-
-                return
-
-            # =================================================
-            # 3. GENERATE ANSWER
-            # =================================================
-
-            print()
-            print(
-                "3. Generating answer..."
-            )
-
-            answer = ""
-
-            for token in self.chatbot.stream(
-                question,
-                final_results
-            ):
-
-                answer += token
-
-                yield (
-                    answer,
-                    final_results
-                )
-
-            print()
-            print(
-                "RAG query completed."
-            )
-
-        except Exception as ex:
-
-            print()
-            print(
-                "=" * 70
-            )
-            print(
-                "ERROR WHILE ANSWERING QUESTION"
-            )
-            print(
-                "=" * 70
-            )
-
-            print(
-                f"{type(ex).__name__}: {ex}"
-            )
-
-            yield (
-                f"Error: {ex}",
-                []
-            )
-
-    # ========================================================
-    # SOURCES
-    # ========================================================
-
-    def get_sources(
-        self,
-        results
-    ):
-        """
-        Convert retrieval results into displayable
-        source information.
-        """
-
-        if not results:
-
-            return []
-
-        return self.chatbot.build_sources(
-            results
-        )
+            return history

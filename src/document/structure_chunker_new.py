@@ -1,1111 +1,521 @@
-from pathlib import Path
-import json
-import re
-
-from src.document.document_parser import DocumentParser, Element
+from collections import Counter
+from typing import Any, Dict, List
 
 
 class StructureChunker:
     """
-    Structure-aware chunker for the new RAG ingestion pipeline.
+    Structure-aware document chunker.
 
-    Pipeline:
+    Responsibilities:
+        - Group parsed document elements into meaningful chunks
+        - Preserve section hierarchy
+        - Preserve captions
+        - Exclude page headers/footers
+        - Exclude raw PictureItem content
+        - Remove obvious diagram/OCR garbage
+        - Enforce maximum chunk size
 
-        Docling document
-              ↓
-        DocumentParser
-              ↓
-        normalized Elements
-              ↓
-        StructureChunker
-              ↓
-        text / table / figure chunks
-
-    This class does NOT handle:
-
-        - embeddings
+    Does NOT handle:
+        - Embeddings
         - FAISS
         - BM25
         - RRF
-        - reranking
+        - Retrieval
+        - Reranking
         - LLM generation
     """
 
-    # ============================================================
-    # CONFIGURATION
-    # ============================================================
+    MAX_CHUNK_CHARS = 5000
 
-    DEFAULT_CHUNK_SIZE = 500
-    DEFAULT_CHUNK_OVERLAP = 50
+    # Elements that should not become normal text content.
+    IGNORED_TYPES = {
+        "page_header",
+        "page_footer",
+        "picture",
+    }
 
-    # ============================================================
-    # INITIALIZATION
-    # ============================================================
+    # Elements that represent structural boundaries.
+    SECTION_TYPES = {
+        "section_header",
+    }
+
+    # Useful non-body content that should be retained.
+    CONTENT_TYPES = {
+        "text",
+        "list_item",
+        "caption",
+        "footnote",
+        "table",
+        "table_item",
+    }
 
     def __init__(
         self,
-        chunk_size=DEFAULT_CHUNK_SIZE,
-        chunk_overlap=DEFAULT_CHUNK_OVERLAP
+        max_chunk_chars: int = MAX_CHUNK_CHARS,
     ):
+        self.max_chunk_chars = max_chunk_chars
 
-        self.chunk_size = chunk_size
-        self.chunk_overlap = chunk_overlap
-
-        self.parser = DocumentParser()
-
-    # ============================================================
+    # =========================================================
     # PUBLIC API
-    # ============================================================
+    # =========================================================
 
-    def chunk(self, document):
-        """
-        Create structure-aware chunks.
-
-        Parameters
-        ----------
-        document:
-            Can be:
-
-            - document.json path
-            - Path object
-            - loaded JSON dictionary
-            - list of normalized Elements
-            - live Docling document
-
-        Returns
-        -------
-        list[dict]
-        """
+    def chunk(
+        self,
+        elements: List[Any],
+    ) -> List[Dict[str, Any]]:
 
         print()
-        print("=" * 70)
+        print("=" * 60)
         print("STRUCTURE CHUNKER")
-        print("=" * 70)
-
-        # --------------------------------------------------------
-        # Already parsed elements
-        # --------------------------------------------------------
-
-        if isinstance(document, list):
-
-            elements = document
-
-        # --------------------------------------------------------
-        # Live Docling document
-        # --------------------------------------------------------
-
-        elif hasattr(
-            document,
-            "iterate_items"
-        ):
-
-            elements = self._parse_docling_document(
-                document
-            )
-
-        # --------------------------------------------------------
-        # document.json
-        # --------------------------------------------------------
-
-        else:
-
-            elements = self.parser.parse(
-                document
-            )
+        print("=" * 60)
 
         print(
-            f"Elements received : {len(elements)}"
+            "Elements received :",
+            len(elements),
         )
 
-        chunks = self._build_chunks(
-            elements
-        )
+        if not elements:
+            return []
 
-        self._assign_chunk_ids(
-            chunks
-        )
+        chunks = self._build_chunks(elements)
 
         print()
         print(
-            f"Chunks created    : {len(chunks)}"
+            "Chunks created    :",
+            len(chunks),
         )
 
-        self._print_distribution(
-            chunks
+        distribution = Counter(
+            chunk.get(
+                "content_type",
+                "unknown",
+            )
+            for chunk in chunks
         )
+
+        print()
+        print("Content distribution:")
+
+        for content_type, count in distribution.items():
+
+            print(
+                f"  {content_type:<10}: {count}"
+            )
 
         return chunks
 
-    # ============================================================
-    # LIVE DOCLING DOCUMENT
-    # ============================================================
-
-    def _parse_docling_document(
-        self,
-        document
-    ):
-
-        """
-        Converts a live Docling Document into normalized
-        Element objects.
-
-        Normally DocumentParser is used instead.
-        This method allows the chunker to also accept
-        a live Docling document.
-        """
-
-        elements = []
-
-        section_path = []
-
-        document_part = "main"
-
-        index = 0
-
-        for item, _level in document.iterate_items():
-
-            item_type = (
-                item.__class__.__name__
-            )
-
-            text = ""
-
-            if hasattr(
-                item,
-                "text"
-            ):
-
-                text = (
-                    item.text or ""
-                )
-
-                text = self._clean_text(
-                    text
-                )
-
-            pages = self._get_pages(
-                item
-            )
-
-            page_start = (
-                min(pages)
-                if pages
-                else None
-            )
-
-            page_end = (
-                max(pages)
-                if pages
-                else None
-            )
-
-            # ----------------------------------------------------
-            # Heading
-            # ----------------------------------------------------
-
-            if item_type in {
-                "SectionHeaderItem",
-                "TitleItem"
-            }:
-
-                if text:
-
-                    section_path = (
-                        self._update_section_path(
-                            section_path,
-                            text
-                        )
-                    )
-
-                    elements.append(
-                        Element(
-                            element_type="heading",
-                            index=index,
-                            text=text,
-                            item=None,
-                            section_path=section_path.copy(),
-                            page_start=page_start,
-                            page_end=page_end,
-                            document_part=document_part
-                        )
-                    )
-
-                index += 1
-
-                continue
-
-            # ----------------------------------------------------
-            # Picture
-            # ----------------------------------------------------
-
-            if item_type == "PictureItem":
-
-                elements.append(
-                    Element(
-                        element_type="picture",
-                        index=index,
-                        text=text,
-                        item=item,
-                        section_path=section_path.copy(),
-                        page_start=page_start,
-                        page_end=page_end,
-                        document_part=document_part
-                    )
-                )
-
-                index += 1
-
-                continue
-
-            # ----------------------------------------------------
-            # Table
-            # ----------------------------------------------------
-
-            if item_type == "TableItem":
-
-                elements.append(
-                    Element(
-                        element_type="table",
-                        index=index,
-                        text=text,
-                        item=item,
-                        section_path=section_path.copy(),
-                        page_start=page_start,
-                        page_end=page_end,
-                        document_part=document_part
-                    )
-                )
-
-                index += 1
-
-                continue
-
-            # ----------------------------------------------------
-            # Text
-            # ----------------------------------------------------
-
-            if text:
-
-                elements.append(
-                    Element(
-                        element_type="text",
-                        index=index,
-                        text=text,
-                        item=None,
-                        section_path=section_path.copy(),
-                        page_start=page_start,
-                        page_end=page_end,
-                        document_part=document_part
-                    )
-                )
-
-            index += 1
-
-        return elements
-
-    # ============================================================
+    # =========================================================
     # BUILD CHUNKS
-    # ============================================================
+    # =========================================================
 
     def _build_chunks(
         self,
-        elements
-    ):
+        elements: List[Any],
+    ) -> List[Dict[str, Any]]:
 
         chunks = []
 
-        text_buffer = []
+        current_parts = []
+        current_elements = []
 
-        text_section = []
+        current_section = []
+        current_caption = None
 
-        text_page_start = None
+        chunk_counter = 0
 
-        text_page_end = None
+        # -----------------------------------------------------
+        # Helpers
+        # -----------------------------------------------------
 
-        text_document_part = "main"
+        def flush():
 
-        # --------------------------------------------------------
-        # Flush text buffer
-        # --------------------------------------------------------
+            nonlocal \
+                current_parts, \
+                current_elements, \
+                current_caption, \
+                chunk_counter
 
-        def flush_text():
-
-            nonlocal text_buffer
-            nonlocal text_section
-            nonlocal text_page_start
-            nonlocal text_page_end
-            nonlocal text_document_part
-
-            if not text_buffer:
-
+            if not current_parts:
                 return
 
-            combined_text = "\n\n".join(
-                text_buffer
+            text = self._clean_text(
+                "\n\n".join(current_parts)
             )
 
-            parts = self._split_text(
-                combined_text
+            if not text:
+                current_parts = []
+                current_elements = []
+                current_caption = None
+                return
+
+            first_element = (
+                current_elements[0]
+                if current_elements
+                else None
             )
 
-            for part in parts:
+            last_element = (
+                current_elements[-1]
+                if current_elements
+                else None
+            )
 
-                if not part.strip():
+            chunk = {
+                "chunk_id": (
+                    f"chunk_text_{chunk_counter}"
+                ),
 
-                    continue
+                "content_type": "text",
 
-                chunks.append(
-                    self._create_text_chunk(
-                        text=part,
-                        section_path=text_section,
-                        page_start=text_page_start,
-                        page_end=text_page_end,
-                        document_part=text_document_part
-                    )
-                )
+                "text": text,
 
-            text_buffer = []
+                "section_path": list(
+                    current_section
+                ),
 
-            text_section = []
+                "caption": current_caption,
 
-            text_page_start = None
+                "page_start": self._get_value(
+                    first_element,
+                    "page_start",
+                ),
 
-            text_page_end = None
+                "page_end": self._get_value(
+                    last_element,
+                    "page_end",
+                ),
 
-            text_document_part = "main"
+                "element_count": len(
+                    current_elements
+                ),
+            }
 
-        # --------------------------------------------------------
+            chunks.append(chunk)
+
+            chunk_counter += 1
+
+            current_parts = []
+            current_elements = []
+            current_caption = None
+
+        # -----------------------------------------------------
         # Process elements
-        # --------------------------------------------------------
+        # -----------------------------------------------------
 
         for element in elements:
 
-            # ====================================================
-            # HEADING
-            # ====================================================
+            element_type = self._get_element_type(
+                element
+            )
 
-            if element.element_type == "heading":
+            # -------------------------------------------------
+            # Section header
+            # -------------------------------------------------
 
-                flush_text()
+            if element_type in self.SECTION_TYPES:
 
-                continue
+                # Finish previous section.
+                flush()
 
-            # ====================================================
-            # TEXT
-            # ====================================================
-
-            if element.element_type == "text":
-
-                text = self._clean_text(
-                    element.text
+                text = self._get_text(
+                    element
                 )
 
-                if not text:
+                if text:
 
-                    continue
-
-                if not text_buffer:
-
-                    text_section = (
-                        element.section_path.copy()
-                    )
-
-                    text_page_start = (
-                        element.page_start
-                    )
-
-                    text_page_end = (
-                        element.page_end
-                    )
-
-                    text_document_part = getattr(
-                        element,
-                        "document_part",
-                        "main"
-                    )
-
-                else:
-
-                    if (
-                        element.page_end
-                        is not None
-                    ):
-
-                        text_page_end = (
-                            element.page_end
+                    current_section = (
+                        self._get_section_path(
+                            element,
+                            fallback=text,
                         )
-
-                text_buffer.append(
-                    text
-                )
-
-                continue
-
-            # ====================================================
-            # TABLE
-            # ====================================================
-
-            if element.element_type == "table":
-
-                flush_text()
-
-                chunk = (
-                    self._create_table_chunk(
-                        element
-                    )
-                )
-
-                if chunk:
-
-                    chunks.append(
-                        chunk
                     )
 
                 continue
 
-            # ====================================================
-            # PICTURE
-            # ====================================================
+            # -------------------------------------------------
+            # Ignore page headers / footers
+            # -------------------------------------------------
 
-            if element.element_type == "picture":
-
-                flush_text()
-
-                chunk = (
-                    self._create_figure_chunk(
-                        element
-                    )
-                )
-
-                if chunk:
-
-                    chunks.append(
-                        chunk
-                    )
+            if element_type in {
+                "page_header",
+                "page_footer",
+            }:
 
                 continue
 
-        # --------------------------------------------------------
-        # Remaining text
-        # --------------------------------------------------------
+            # -------------------------------------------------
+            # Ignore pictures
+            # -------------------------------------------------
 
-        flush_text()
+            if element_type in {
+                "picture",
+                "PictureItem",
+                "picture_item",
+            }:
 
-        return chunks
+                continue
 
-    # ============================================================
-    # TEXT CHUNK
-    # ============================================================
+            # -------------------------------------------------
+            # Get text
+            # -------------------------------------------------
 
-    def _create_text_chunk(
-        self,
-        text,
-        section_path,
-        page_start,
-        page_end,
-        document_part
-    ):
+            text = self._get_text(
+                element
+            )
 
-        return {
+            if not text:
+                continue
 
-            "chunk_id": None,
+            # -------------------------------------------------
+            # Caption
+            # -------------------------------------------------
 
-            "content_type": "text",
+            if element_type == "caption":
 
-            "text": text,
+                # Keep caption as metadata and context.
+                current_caption = text
 
-            "caption": None,
-
-            "page_start": page_start,
-
-            "page_end": page_end,
-
-            "section_path": section_path.copy(),
-
-            "section": (
-                section_path[-1]
-                if section_path
-                else None
-            ),
-
-            "document_part": document_part,
-
-            "token_count": len(
-                text.split()
-            ),
-
-            "parent_id": None,
-
-            "is_atomic": False,
-
-            "image_path": None,
-
-            "referenced_from": []
-        }
-
-    # ============================================================
-    # TABLE CHUNK
-    # ============================================================
-
-    def _create_table_chunk(
-        self,
-        element
-    ):
-
-        item = element.item
-
-        if item is None:
-            return None
-
-        caption = self._get_caption(
-            item
-        )
-
-        table_text = self._get_table_text(
-            item
-        )
-
-        return {
-
-            "chunk_id": None,
-
-            "content_type": "table",
-
-            "text": table_text,
-
-            "caption": caption,
-
-            "page_start": element.page_start,
-
-            "page_end": element.page_end,
-
-            "section_path": (
-                element.section_path.copy()
-            ),
-
-            "section": (
-                element.section_path[-1]
-                if element.section_path
-                else None
-            ),
-
-            "document_part": getattr(
-                element,
-                "document_part",
-                "main"
-            ),
-
-            "token_count": (
-                len(table_text.split())
-                if table_text
-                else 0
-            ),
-
-            "parent_id": None,
-
-            "is_atomic": True,
-
-            "image_path": None,
-
-            "referenced_from": []
-        }
-
-    # ============================================================
-    # FIGURE CHUNK
-    # ============================================================
-
-    def _create_figure_chunk(
-        self,
-        element
-    ):
-
-        item = element.item
-
-        if item is None:
-            return None
-
-        caption = self._get_caption(
-            item
-        )
-
-        return {
-
-            "chunk_id": None,
-
-            "content_type": "figure",
-
-            "text": "",
-
-            "caption": caption,
-
-            "page_start": element.page_start,
-
-            "page_end": element.page_end,
-
-            "section_path": (
-                element.section_path.copy()
-            ),
-
-            "section": (
-                element.section_path[-1]
-                if element.section_path
-                else None
-            ),
-
-            "document_part": getattr(
-                element,
-                "document_part",
-                "main"
-            ),
-
-            "token_count": (
-                len(caption.split())
-                if caption
-                else 0
-            ),
-
-            "parent_id": None,
-
-            "is_atomic": True,
-
-            "image_path": (
-                self._get_image_path(
-                    item
+                current_parts.append(
+                    f"Caption: {text}"
                 )
-            ),
 
-            "referenced_from": []
-        }
+                current_elements.append(
+                    element
+                )
 
-    # ============================================================
-    # CAPTION
-    # ============================================================
+                continue
 
-    def _get_caption(
-        self,
-        item
-    ):
+            # -------------------------------------------------
+            # Filter diagram/OCR garbage
+            # -------------------------------------------------
 
-        try:
-
-            captions = getattr(
-                item,
-                "captions",
-                None
-            )
-
-            if not captions:
-
-                return None
-
-            values = []
-
-            for caption in captions:
-
-                if hasattr(
-                    caption,
-                    "text"
-                ):
-
-                    values.append(
-                        caption.text
-                    )
-
-                else:
-
-                    values.append(
-                        str(caption)
-                    )
-
-            result = " ".join(
-                values
-            )
-
-            result = self._clean_text(
-                result
-            )
-
-            return result or None
-
-        except Exception:
-
-            return None
-
-    # ============================================================
-    # TABLE TEXT
-    # ============================================================
-
-    def _get_table_text(
-        self,
-        item
-    ):
-
-        # --------------------------------------------------------
-        # DataFrame
-        # --------------------------------------------------------
-
-        try:
-
-            if hasattr(
-                item,
-                "export_to_dataframe"
+            if self._looks_like_diagram_garbage(
+                text
             ):
 
-                dataframe = (
-                    item.export_to_dataframe()
-                )
+                continue
 
-                return self._clean_text(
-                    dataframe.to_string(
-                        index=False
-                    )
-                )
+            # -------------------------------------------------
+            # Normal content
+            # -------------------------------------------------
 
-        except Exception:
-
-            pass
-
-        # --------------------------------------------------------
-        # Direct text
-        # --------------------------------------------------------
-
-        try:
-
-            text = getattr(
-                item,
-                "text",
-                ""
+            current_parts.append(
+                text
             )
 
-            if text:
-
-                return self._clean_text(
-                    text
-                )
-
-        except Exception:
-
-            pass
-
-        return ""
-
-    # ============================================================
-    # IMAGE PATH
-    # ============================================================
-
-    def _get_image_path(
-        self,
-        item
-    ):
-
-        try:
-
-            image = getattr(
-                item,
-                "image",
-                None
+            current_elements.append(
+                element
             )
 
-            if image is None:
+            # -------------------------------------------------
+            # Enforce chunk size
+            # -------------------------------------------------
 
-                return None
-
-            uri = getattr(
-                image,
-                "uri",
-                None
+            current_text = self._clean_text(
+                "\n\n".join(current_parts)
             )
 
-            if uri:
+            if (
+                len(current_text)
+                >= self.max_chunk_chars
+            ):
 
-                return str(uri)
+                flush()
 
-        except Exception:
+        # -----------------------------------------------------
+        # Final chunk
+        # -----------------------------------------------------
 
-            pass
-
-        return None
-
-    # ============================================================
-    # SPLIT TEXT
-    # ============================================================
-
-    def _split_text(
-        self,
-        text
-    ):
-
-        text = self._clean_text(
-            text
-        )
-
-        if not text:
-
-            return []
-
-        words = text.split()
-
-        # --------------------------------------------------------
-        # Small enough
-        # --------------------------------------------------------
-
-        if len(words) <= self.chunk_size:
-
-            return [text]
-
-        chunks = []
-
-        start = 0
-
-        while start < len(words):
-
-            end = (
-                start
-                + self.chunk_size
-            )
-
-            part = " ".join(
-                words[start:end]
-            )
-
-            if part.strip():
-
-                chunks.append(
-                    part
-                )
-
-            if end >= len(words):
-
-                break
-
-            start = max(
-                0,
-                end - self.chunk_overlap
-            )
+        flush()
 
         return chunks
 
-    # ============================================================
-    # CHUNK IDS
-    # ============================================================
+    # =========================================================
+    # TEXT CLEANING
+    # =========================================================
 
-    def _assign_chunk_ids(
-        self,
-        chunks
-    ):
-
-        counters = {
-            "text": 0,
-            "table": 0,
-            "figure": 0
-        }
-
-        for chunk in chunks:
-
-            content_type = (
-                chunk["content_type"]
-            )
-
-            number = counters.get(
-                content_type,
-                0
-            )
-
-            chunk["chunk_id"] = (
-                f"chunk_{content_type}_{number}"
-            )
-
-            counters[
-                content_type
-            ] = number + 1
-
-    # ============================================================
-    # PAGE EXTRACTION
-    # ============================================================
-
-    def _get_pages(
-        self,
-        item
-    ):
-
-        pages = []
-
-        try:
-
-            prov = getattr(
-                item,
-                "prov",
-                []
-            )
-
-            for value in prov:
-
-                page = getattr(
-                    value,
-                    "page_no",
-                    None
-                )
-
-                if page is not None:
-
-                    pages.append(
-                        int(page)
-                    )
-
-        except Exception:
-
-            pass
-
-        return sorted(
-            set(pages)
-        )
-
-    # ============================================================
-    # SECTION PATH
-    # ============================================================
-
-    def _update_section_path(
-        self,
-        current_path,
-        title
-    ):
-
-        title = self._clean_text(
-            title
-        )
-
-        match = re.match(
-            r"^(\d+(?:\.\d+)*)\s+",
-            title
-        )
-
-        if not match:
-
-            return current_path
-
-        depth = len(
-            match.group(1).split(".")
-        )
-
-        return (
-            current_path[
-                :depth - 1
-            ]
-            + [title]
-        )
-
-    # ============================================================
-    # CLEAN TEXT
-    # ============================================================
-
-    @staticmethod
     def _clean_text(
-        text
-    ):
+        self,
+        text: str,
+    ) -> str:
 
         if not text:
-
             return ""
 
-        text = str(
-            text
-        )
+        lines = []
 
-        text = text.replace(
-            "\u00a0",
-            " "
-        )
+        for line in text.splitlines():
 
-        text = re.sub(
-            r"[ \t]+",
-            " ",
-            text
-        )
+            line = line.strip()
 
-        text = re.sub(
-            r"\n{3,}",
-            "\n\n",
-            text
-        )
+            if not line:
+                continue
 
-        return text.strip()
+            # Collapse excessive whitespace.
+            line = " ".join(
+                line.split()
+            )
 
-    # ============================================================
-    # DISTRIBUTION
-    # ============================================================
+            lines.append(line)
 
-    def _print_distribution(
+        return "\n\n".join(lines)
+
+    # =========================================================
+    # DIAGRAM / OCR FILTER
+    # =========================================================
+
+    def _looks_like_diagram_garbage(
         self,
-        chunks
+        text: str,
+    ) -> bool:
+
+        normalized = (
+            text
+            .strip()
+            .lower()
+        )
+
+        if not normalized:
+            return True
+
+        # Typical extracted diagram tokens.
+        diagram_tokens = {
+            "matmul",
+            "softmax",
+            "linear",
+            "concat",
+            "scale",
+            "mask",
+            "attention",
+        }
+
+        tokens = set(
+            normalized.replace(
+                "(",
+                " ",
+            )
+            .replace(
+                ")",
+                " ",
+            )
+            .replace(
+                ",",
+                " ",
+            )
+            .split()
+        )
+
+        # Short token-only diagram strings.
+        if (
+            len(tokens) <= 15
+            and len(
+                tokens.intersection(
+                    diagram_tokens
+                )
+            ) >= 3
+        ):
+            return True
+
+        # Very high symbol density.
+        alpha_count = sum(
+            char.isalpha()
+            for char in text
+        )
+
+        if (
+            len(text) > 20
+            and alpha_count / len(text)
+            < 0.35
+        ):
+            return True
+
+        return False
+
+    # =========================================================
+    # ELEMENT HELPERS
+    # =========================================================
+
+    def _get_element_type(
+        self,
+        element,
+    ) -> str:
+
+        value = self._get_value(
+            element,
+            "element_type",
+            "",
+        )
+
+        return str(value)
+
+    def _get_text(
+        self,
+        element,
+    ) -> str:
+
+        value = self._get_value(
+            element,
+            "text",
+            "",
+        )
+
+        if value is None:
+            return ""
+
+        return str(value).strip()
+
+    def _get_section_path(
+        self,
+        element,
+        fallback=None,
+    ) -> List[str]:
+
+        section_path = self._get_value(
+            element,
+            "section_path",
+            None,
+        )
+
+        if section_path:
+
+            if isinstance(
+                section_path,
+                list,
+            ):
+
+                return [
+                    str(x)
+                    for x in section_path
+                    if x
+                ]
+
+        if fallback:
+            return [fallback]
+
+        return []
+
+    def _get_value(
+        self,
+        obj,
+        attribute,
+        default=None,
     ):
 
-        distribution = {}
+        if obj is None:
+            return default
 
-        for chunk in chunks:
-
-            content_type = (
-                chunk.get(
-                    "content_type",
-                    "unknown"
-                )
-            )
-
-            distribution[
-                content_type
-            ] = (
-                distribution.get(
-                    content_type,
-                    0
-                )
-                + 1
-            )
-
-        print()
-        print(
-            "Content distribution:"
-        )
-
-        for content_type, count in (
-            distribution.items()
+        if isinstance(
+            obj,
+            dict,
         ):
 
-            print(
-                f"  {content_type:<10}: "
-                f"{count}"
+            return obj.get(
+                attribute,
+                default,
             )
 
-    # ============================================================
-    # SAVE
-    # ============================================================
-
-    def save_chunks(
-        self,
-        chunks,
-        output_path
-    ):
-
-        output_path = Path(
-            output_path
-        )
-
-        output_path.parent.mkdir(
-            parents=True,
-            exist_ok=True
-        )
-
-        with open(
-            output_path,
-            "w",
-            encoding="utf-8"
-        ) as f:
-
-            json.dump(
-                chunks,
-                f,
-                indent=2,
-                ensure_ascii=False
-            )
-
-        print(
-            f"Chunks saved: {output_path}"
+        return getattr(
+            obj,
+            attribute,
+            default,
         )

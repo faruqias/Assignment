@@ -1,0 +1,86 @@
+[
+  {
+    "vector_id": 0,
+    "chunk_id": "chunk_text_0",
+    "document_id": "sample_rag_document",
+    "document_name": "sample_rag_document.pdf",
+    "content_type": "text",
+    "page_start": 1,
+    "page_end": 1,
+    "section": null,
+    "section_path": [
+      "Enterprise AI Document"
+    ],
+    "token_count": null,
+    "parent_id": null,
+    "is_atomic": false,
+    "caption": null,
+    "image_path": null,
+    "document_part": "main",
+    "referenced_from": [],
+    "text": "This sample document is intended for testing Azure AI Document Intelligence, Pinecone, and Retrieval-Augmented Generation (RAG). It contains headings, multiple paragraphs, a table, and an embedded image."
+  },
+  {
+    "vector_id": 1,
+    "chunk_id": "chunk_text_1",
+    "document_id": "sample_rag_document",
+    "document_name": "sample_rag_document.pdf",
+    "content_type": "text",
+    "page_start": 1,
+    "page_end": 1,
+    "section": null,
+    "section_path": [
+      "Introduction"
+    ],
+    "token_count": null,
+    "parent_id": null,
+    "is_atomic": false,
+    "caption": null,
+    "image_path": null,
+    "document_part": "main",
+    "referenced_from": [],
+    "text": "Artificial Intelligence enables machines to perform tasks that normally require human intelligence. Modern enterprise solutions combine vector databases, embeddings, and large language models.\n\nA Retrieval-Augmented Generation system stores document embeddings in a vector database and retrieves relevant chunks before generating an answer.\n\nAzure OpenAI provides embedding models and chat models that integrate well with Azure AI services."
+  },
+  {
+    "vector_id": 2,
+    "chunk_id": "chunk_text_2",
+    "document_id": "sample_rag_document",
+    "document_name": "sample_rag_document.pdf",
+    "content_type": "text",
+    "page_start": 1,
+    "page_end": 1,
+    "section": null,
+    "section_path": [
+      "Architecture Diagram"
+    ],
+    "token_count": null,
+    "parent_id": null,
+    "is_atomic": false,
+    "caption": "Figure 1. A simple conceptual diagram representing an AI document processing pipeline.",
+    "image_path": null,
+    "document_part": "main",
+    "referenced_from": [],
+    "text": "Caption: Figure 1. A simple conceptual diagram representing an AI document processing pipeline.\n\nAI Document Flow"
+  },
+  {
+    "vector_id": 3,
+    "chunk_id": "chunk_text_3",
+    "document_id": "sample_rag_document",
+    "document_name": "sample_rag_document.pdf",
+    "content_type": "text",
+    "page_start": 1,
+    "page_end": 1,
+    "section": null,
+    "section_path": [
+      "Conclusion"
+    ],
+    "token_count": null,
+    "parent_id": null,
+    "is_atomic": false,
+    "caption": null,
+    "image_path": null,
+    "document_part": "main",
+    "referenced_from": [],
+    "text": "This document can be used to validate paragraph extraction, table detection, image handling, page numbering, and semantic chunking using Azure AI Document Intelligence."
+  }
+]
