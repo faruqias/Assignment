@@ -1,4 +1,8 @@
 from pathlib import Path
+import json
+
+import numpy as np
+import faiss
 
 from src.document.document_processor import DocumentProcessor
 from src.document.document_parser import DocumentParser
@@ -18,21 +22,78 @@ from src.app.azure_openai_client import AzureOpenAIClient
 
 class RAGApplication:
     """
-    Application-level orchestration for the RAG system.
+    Main RAG application orchestrator.
 
-    Responsibilities:
-        - Process uploaded PDFs
-        - Parse documents
-        - Create chunks
-        - Generate embeddings
-        - Build retrieval indexes
-        - Create RAG chatbot
-        - Handle UI requests
+    VECTOR STORE:
+
+        data/vectorstore/
+            index.faiss
+            metadata.json
+
+    All uploaded documents share the same vector index.
+
+    Document pipeline:
+
+        PDF
+         ↓
+        Docling
+         ↓
+        Parser
+         ↓
+        Chunker
+         ↓
+        BGE-M3
+         ↓
+        Unified FAISS
+         ↓
+        Unified metadata
+
+    Query pipeline:
+
+        Question
+             ↓
+        BGE-M3 query embedding
+             ↓
+        FAISS + BM25
+             ↓
+             RRF
+             ↓
+        BGE Reranker
+             ↓
+        Context selection
+             ↓
+        Prompt Builder
+             ↓
+        Azure OpenAI
     """
 
-    VECTORSTORE_ROOT = Path(
-        "data/vectorstore"
+    # =========================================================
+    # PATHS
+    # =========================================================
+
+    BASE_DIR = Path(
+        __file__
+    ).resolve().parents[2]
+
+    VECTORSTORE_ROOT = (
+        BASE_DIR
+        / "data"
+        / "vectorstore"
     )
+
+    FAISS_PATH = (
+        VECTORSTORE_ROOT
+        / "index.faiss"
+    )
+
+    METADATA_PATH = (
+        VECTORSTORE_ROOT
+        / "metadata.json"
+    )
+
+    # =========================================================
+    # INITIALIZATION
+    # =========================================================
 
     def __init__(self):
 
@@ -78,14 +139,21 @@ class RAGApplication:
         self.embedding = EmbeddingService()
 
         # =====================================================
-        # 5. VECTOR INDEXER
+        # 5. UNIFIED VECTOR INDEX
         # =====================================================
 
         print()
-        print("5. Vector Indexer")
+        print("5. Unified Vector Index")
 
-        # Created per document during upload.
-        self.indexer = None
+        self.VECTORSTORE_ROOT.mkdir(
+            parents=True,
+            exist_ok=True
+        )
+
+        self.indexer = VectorIndexer(
+            index_path=self.FAISS_PATH,
+            metadata_path=self.METADATA_PATH
+        )
 
         # =====================================================
         # 6. RERANKER
@@ -106,7 +174,7 @@ class RAGApplication:
         self.prompt_builder = PromptBuilder()
 
         # =====================================================
-        # 8. AZURE OPENAI CLIENT
+        # 8. AZURE OPENAI
         # =====================================================
 
         print()
@@ -115,16 +183,23 @@ class RAGApplication:
         self.openapi_client = AzureOpenAIClient()
 
         # =====================================================
-        # CHATBOT
+        # RAG COMPONENTS
         # =====================================================
 
+        self.bm25 = None
+        self.rrf = None
+        self.retriever = None
         self.chatbot = None
 
+        # All chunks currently represented in the
+        # unified vector store.
+        self.chunks = []
+
         # =====================================================
-        # DOCUMENT STATE
+        # LOAD EXISTING INDEX
         # =====================================================
 
-        self.documents = {}
+        self._load_existing_index()
 
         print()
         print("=" * 70)
@@ -132,35 +207,248 @@ class RAGApplication:
         print("=" * 70)
 
     # =========================================================
-    # DOCUMENT UPLOAD
+    # LOAD EXISTING UNIFIED INDEX
     # =========================================================
 
-    def upload_documents(self, files):
+    def _load_existing_index(self):
         """
-        Process and index uploaded PDF documents.
+        Load the single unified FAISS index.
 
-        Current implementation processes each PDF and creates
-        its own vector store.
+        No PDF processing.
+        No document embedding.
 
-        Returns:
-            str: UI status message
+        Existing vectors and metadata are reused.
+        """
+
+        if not (
+            self.FAISS_PATH.exists()
+            and self.METADATA_PATH.exists()
+        ):
+
+            print()
+            print(
+                "No existing unified vector store found."
+            )
+
+            return False
+
+        print()
+        print(
+            "Loading existing unified vector store..."
+        )
+
+        self.indexer.load()
+
+        self.chunks = list(
+            self.indexer.metadata
+        )
+
+        if not self.chunks:
+
+            print(
+                "Existing vector store contains no metadata."
+            )
+
+            return False
+
+        print(
+            f"   Vectors: "
+            f"{self.indexer.vector_count}"
+        )
+
+        print(
+            f"   Chunks : "
+            f"{len(self.chunks)}"
+        )
+
+        self._build_retrieval_pipeline()
+
+        print(
+            "Unified vector store loaded."
+        )
+
+        return True
+
+    # =========================================================
+    # BUILD RETRIEVAL PIPELINE
+    # =========================================================
+
+    def _build_retrieval_pipeline(self):
+        """
+        Build BM25, RRF, Retriever and RAGChatbot
+        using the unified vector store.
+        """
+
+        if not self.chunks:
+
+            self.bm25 = None
+            self.rrf = None
+            self.retriever = None
+            self.chatbot = None
+
+            return
+
+        # -----------------------------------------------------
+        # BM25
+        # -----------------------------------------------------
+
+        self.bm25 = BM25Retriever(
+            self.chunks
+        )
+
+        # -----------------------------------------------------
+        # RRF
+        # -----------------------------------------------------
+
+        self.rrf = RRFFusion()
+
+        # -----------------------------------------------------
+        # Retriever
+        # -----------------------------------------------------
+
+        self.retriever = Retriever(
+            indexer=self.indexer,
+            embedding_service=self.embedding,
+            bm25_retriever=self.bm25,
+            rrf_fusion=self.rrf
+        )
+
+        # -----------------------------------------------------
+        # RAG Chatbot
+        # -----------------------------------------------------
+
+        self.chatbot = RAGChatbot(
+            retriever=self.retriever,
+            reranker=self.reranker,
+            prompt_builder=self.prompt_builder,
+            openapi_client=self.openapi_client,
+            chunks=self.chunks,
+        )
+
+    # =========================================================
+    # LOAD EMBEDDINGS FROM EXISTING FAISS INDEX
+    # =========================================================
+
+    def _read_existing_embeddings(self):
+        """
+        Read all existing vectors from the FAISS index.
+
+        IndexFlatIP stores vectors directly.
+        """
+
+        if (
+            self.indexer.index is None
+            or self.indexer.index.ntotal == 0
+        ):
+
+            return None
+
+        return self.indexer.index.reconstruct_n(
+            0,
+            self.indexer.index.ntotal
+        )
+
+    # =========================================================
+    # REMOVE DUPLICATE CHUNKS
+    # =========================================================
+
+    @staticmethod
+    def _chunk_key(chunk):
+        """
+        Create a stable key for duplicate detection.
+
+        Document + chunk id is preferred.
+        Text is used as a fallback.
+        """
+
+        document_id = chunk.get(
+            "document_id",
+            ""
+        )
+
+        chunk_id = chunk.get(
+            "chunk_id",
+            ""
+        )
+
+        text = chunk.get(
+            "text",
+            ""
+        )
+
+        if document_id and chunk_id:
+
+            return (
+                document_id,
+                chunk_id
+            )
+
+        return (
+            document_id,
+            text.strip()
+        )
+
+    # =========================================================
+    # UPLOAD DOCUMENTS
+    # =========================================================
+
+    def upload_documents(
+        self,
+        files
+    ):
+        """
+        Process and add uploaded PDFs to the
+        single unified vector store.
+
+        IMPORTANT:
+
+        This method never creates:
+
+            vectorstore/<document_id>/
+
+        All documents are stored in:
+
+            data/vectorstore/index.faiss
+            data/vectorstore/metadata.json
         """
 
         if not files:
 
-            return "Please upload at least one PDF document."
+            return (
+                "Please upload at least one PDF document."
+            )
 
-        if not isinstance(files, list):
+        if not isinstance(
+            files,
+            list
+        ):
 
             files = [files]
 
         messages = []
 
+        # -----------------------------------------------------
+        # Existing chunks
+        # -----------------------------------------------------
+
+        existing_keys = {
+            self._chunk_key(chunk)
+            for chunk in self.chunks
+        }
+
+        new_chunks = []
+
+        # =====================================================
+        # PROCESS UPLOADS
+        # =====================================================
+
         for file_path in files:
 
             try:
 
-                file_path = str(file_path)
+                file_path = str(
+                    file_path
+                )
 
                 document_name = Path(
                     file_path
@@ -177,291 +465,267 @@ class RAGApplication:
                 )
                 print("=" * 60)
 
-                # =================================================
-                # 1. PROCESS DOCUMENT
-                # =================================================
+                # ------------------------------------------------
+                # Check whether document already exists
+                # ------------------------------------------------
 
-                result = self.processor.process(
-                    file_path
+                existing_document = any(
+                    chunk.get(
+                        "document_id"
+                    ) == document_id
+                    for chunk in self.chunks
                 )
 
-                # =================================================
+                if existing_document:
+
+                    messages.append(
+                        f"⚠ {document_name} "
+                        "already indexed. Skipped."
+                    )
+
+                    continue
+
+                # ------------------------------------------------
+                # 1. PROCESS
+                # ------------------------------------------------
+
+                print()
+                print(
+                    "1. Processing document..."
+                )
+
+                result = (
+                    self.processor.process(
+                        file_path
+                    )
+                )
+
+                # ------------------------------------------------
                 # 2. PARSE
-                # =================================================
+                # ------------------------------------------------
 
-                elements = self.parser.parse(
-                    result["json_path"]
+                print()
+                print(
+                    "2. Parsing document..."
                 )
 
-                # =================================================
-                # 3. CHUNK
-                # =================================================
+                elements = (
+                    self.parser.parse(
+                        result["json_path"]
+                    )
+                )
 
-                chunks = self.chunker.chunk(
-                    elements
+                # ------------------------------------------------
+                # 3. CHUNK
+                # ------------------------------------------------
+
+                print()
+                print(
+                    "3. Building chunks..."
+                )
+
+                chunks = (
+                    self.chunker.chunk(
+                        elements
+                    )
                 )
 
                 if not chunks:
 
                     messages.append(
-                        f"{document_name}: no chunks generated."
+                        f"✗ {document_name}: "
+                        "no chunks generated."
                     )
 
                     continue
 
-                # =================================================
-                # 4. METADATA
-                # =================================================
+                # ------------------------------------------------
+                # 4. DOCUMENT METADATA
+                # ------------------------------------------------
 
                 for chunk in chunks:
 
-                    chunk["document_id"] = (
-                        document_id
+                    chunk[
+                        "document_id"
+                    ] = document_id
+
+                    chunk[
+                        "document_name"
+                    ] = document_name
+
+                # ------------------------------------------------
+                # Duplicate chunk protection
+                # ------------------------------------------------
+
+                unique_chunks = []
+
+                for chunk in chunks:
+
+                    key = (
+                        self._chunk_key(
+                            chunk
+                        )
                     )
 
-                    chunk["document_name"] = (
-                        document_name
+                    if key in existing_keys:
+
+                        continue
+
+                    existing_keys.add(
+                        key
                     )
 
-                # =================================================
-                # 5. EMBEDDINGS
-                # =================================================
-
-                embeddings = (
-                    self.embedding.embed_documents(
-                        chunks
+                    unique_chunks.append(
+                        chunk
                     )
+
+                if not unique_chunks:
+
+                    messages.append(
+                        f"⚠ {document_name}: "
+                        "all chunks already indexed."
+                    )
+
+                    continue
+
+                new_chunks.extend(
+                    unique_chunks
                 )
-
-                # =================================================
-                # 6. VECTOR INDEX
-                # =================================================
-
-                vectorstore_path = (
-                    self.VECTORSTORE_ROOT
-                    / document_id
-                )
-
-                vectorstore_path.mkdir(
-                    parents=True,
-                    exist_ok=True
-                )
-
-                index_path = (
-                    vectorstore_path
-                    / "index.faiss"
-                )
-
-                metadata_path = (
-                    vectorstore_path
-                    / "metadata.json"
-                )
-
-                indexer = VectorIndexer(
-                    index_path=str(index_path),
-                    metadata_path=str(metadata_path)
-                )
-
-                indexer.index_documents(
-                    chunks,
-                    embeddings
-                )
-
-                indexer.save()
-
-                # =================================================
-                # 7. BM25
-                # =================================================
-
-                bm25 = BM25Retriever(
-                    chunks
-                )
-
-                # =================================================
-                # 8. RRF
-                # =================================================
-
-                rrf = RRFFusion()
-
-                # =================================================
-                # 9. RETRIEVER
-                # =================================================
-
-                retriever = Retriever(
-                    indexer=indexer,
-                    embedding_service=self.embedding,
-                    bm25_retriever=bm25,
-                    rrf_fusion=rrf
-                )
-
-                # =================================================
-                # SAVE DOCUMENT
-                # =================================================
-
-                self.documents[document_id] = {
-                    "document_id": document_id,
-                    "document_name": document_name,
-                    "chunks": chunks,
-                    "indexer": indexer,
-                    "bm25": bm25,
-                    "rrf": rrf,
-                    "retriever": retriever,
-                }
 
                 messages.append(
-                    f"✓ {document_name} "
-                    f"({len(chunks)} chunks)"
+                    f"✓ {document_name}: "
+                    f"{len(unique_chunks)} new chunks"
                 )
 
             except Exception as exc:
 
                 messages.append(
-                    f"✗ {document_name}: {exc}"
+                    f"✗ {document_name}: "
+                    f"{exc}"
                 )
 
                 print()
                 print(
-                    f"ERROR processing {document_name}:"
+                    f"ERROR processing "
+                    f"{document_name}:"
                 )
+
                 print(exc)
 
-        # =========================================================
-        # BUILD ACTIVE CHATBOT
-        # =========================================================
+        # =====================================================
+        # NOTHING NEW
+        # =====================================================
 
-        if self.documents:
+        if not new_chunks:
 
-            # For now use the latest uploaded document.
-            latest_document = list(
-                self.documents.values()
-            )[-1]
-
-            self.indexer = (
-                latest_document["indexer"]
+            return "\n".join(
+                messages
             )
 
-            self.chatbot = RAGChatbot(
-                retriever=latest_document["retriever"],
-                reranker=self.reranker,
-                prompt_builder=self.prompt_builder,
-                openapi_client=self.openapi_client,
-                chunks=latest_document["chunks"]
-            )
-
-        return "\n".join(messages)
-
-    # =========================================================
-    # LOAD EXISTING VECTOR STORE
-    # =========================================================
-
-    def _load_existing_document(self):
-        """
-        Load an existing persisted vector store.
-
-        This does not process or embed the original PDF again.
-        It reconstructs the retrieval pipeline from the persisted
-        FAISS index and metadata/chunks.
-        """
-
-        if not self.VECTORSTORE_ROOT.exists():
-            return False
-
-        document_dirs = [
-            path
-            for path in self.VECTORSTORE_ROOT.iterdir()
-            if path.is_dir()
-            and (path / "index.faiss").exists()
-            and (path / "metadata.json").exists()
-        ]
-
-        if not document_dirs:
-            return False
-
-        # Prefer the most recently modified persisted index.
-        document_dir = max(
-            document_dirs,
-            key=lambda path: (
-                path / "index.faiss"
-            ).stat().st_mtime,
-        )
-
-        document_id = document_dir.name
-
-        if document_id in self.documents:
-            document = self.documents[document_id]
-
-        else:
-            indexer = VectorIndexer(
-                index_path=str(
-                    document_dir / "index.faiss"
-                ),
-                metadata_path=str(
-                    document_dir / "metadata.json"
-                ),
-            )
-
-            indexer.load()
-
-            # Support the existing VectorIndexer implementations
-            # that expose persisted records under either name.
-            chunks = getattr(
-                indexer,
-                "chunks",
-                None,
-            )
-
-            if chunks is None:
-                chunks = getattr(
-                    indexer,
-                    "documents",
-                    None,
-                )
-
-            if not chunks:
-                raise RuntimeError(
-                    "Existing vector store was loaded, but indexed "
-                    "chunks were not found. VectorIndexer must expose "
-                    "the persisted chunk metadata for BM25/reranking."
-                )
-
-            bm25 = BM25Retriever(chunks)
-            rrf = RRFFusion()
-
-            retriever = Retriever(
-                indexer=indexer,
-                embedding_service=self.embedding,
-                bm25_retriever=bm25,
-                rrf_fusion=rrf,
-            )
-
-            document = {
-                "document_id": document_id,
-                "document_name": document_id,
-                "chunks": chunks,
-                "indexer": indexer,
-                "bm25": bm25,
-                "rrf": rrf,
-                "retriever": retriever,
-            }
-
-            self.documents[document_id] = document
-
-        self.indexer = document["indexer"]
-
-        self.chatbot = RAGChatbot(
-            retriever=document["retriever"],
-            reranker=self.reranker,
-            prompt_builder=self.prompt_builder,
-            openapi_client=self.openapi_client,
-            chunks=document["chunks"],
-        )
+        # =====================================================
+        # EMBED ONLY NEW CHUNKS
+        # =====================================================
 
         print()
         print(
-            f"Existing vector store loaded: {document_id}"
+            "=" * 60
+        )
+        print(
+            "GENERATING EMBEDDINGS FOR NEW CHUNKS"
+        )
+        print(
+            "=" * 60
         )
 
-        return True
+        new_embeddings = (
+            self.embedding.embed_documents(
+                new_chunks
+            )
+        )
+
+        # =====================================================
+        # EXISTING EMBEDDINGS
+        # =====================================================
+
+        existing_embeddings = (
+            self._read_existing_embeddings()
+        )
+
+        # =====================================================
+        # COMBINE
+        # =====================================================
+
+        if existing_embeddings is not None:
+
+            combined_embeddings = (
+                np.vstack(
+                    [
+                        existing_embeddings,
+                        np.asarray(
+                            new_embeddings,
+                            dtype=np.float32
+                        )
+                    ]
+                )
+            )
+
+            combined_chunks = (
+                self.chunks
+                + new_chunks
+            )
+
+        else:
+
+            combined_embeddings = (
+                np.asarray(
+                    new_embeddings,
+                    dtype=np.float32
+                )
+            )
+
+            combined_chunks = (
+                new_chunks
+            )
+
+        # =====================================================
+        # REBUILD SINGLE FAISS INDEX
+        # =====================================================
+
+        print()
+        print(
+            "=" * 60
+        )
+        print(
+            "UPDATING UNIFIED VECTOR STORE"
+        )
+        print(
+            "=" * 60
+        )
+
+        self.indexer.index_documents(
+            combined_chunks,
+            combined_embeddings
+        )
+
+        self.indexer.save()
+
+        # =====================================================
+        # UPDATE APPLICATION STATE
+        # =====================================================
+
+        self.chunks = combined_chunks
+
+        self._build_retrieval_pipeline()
+
+        print()
+        print(
+            f"Unified vectors: "
+            f"{len(self.chunks)}"
+        )
+
+        return "\n".join(
+            messages
+        )
 
     # =========================================================
     # ASK QUESTION
@@ -473,28 +737,44 @@ class RAGApplication:
         history
     ):
         """
-        Ask a question through the RAG chatbot.
+        Ask a question using the unified vector store.
 
-        Gradio 6.x expects message dictionaries.
+        No upload is required for every session.
         """
 
         if not message or not message.strip():
 
             return history or []
 
-        # No current-session upload is required.
-        # If the chatbot is not initialized, try to use an
-        # already persisted vector store.
-        if self.chatbot is None:
-            try:
-                self._load_existing_document()
-            except Exception as exc:
-                print()
-                print("ERROR LOADING EXISTING VECTOR STORE:")
-                print(exc)
+        # -----------------------------------------------------
+        # If application started before an index existed,
+        # try loading it now.
+        # -----------------------------------------------------
 
         if self.chatbot is None:
-            history = history or []
+
+            try:
+
+                self._load_existing_index()
+
+            except Exception as exc:
+
+                print()
+                print(
+                    "ERROR LOADING VECTOR STORE:"
+                )
+
+                print(exc)
+
+        # -----------------------------------------------------
+        # No index
+        # -----------------------------------------------------
+
+        if self.chatbot is None:
+
+            history = (
+                history or []
+            )
 
             history.append(
                 {
@@ -507,18 +787,24 @@ class RAGApplication:
                 {
                     "role": "assistant",
                     "content": (
-                        "I couldn't find any indexed document "
-                        "to answer this question."
+                        "I couldn't find any indexed "
+                        "document to answer this question."
                     ),
                 }
             )
 
             return history
 
+        # -----------------------------------------------------
+        # Ask RAG
+        # -----------------------------------------------------
+
         try:
 
-            response = self.chatbot.ask(
-                message
+            response = (
+                self.chatbot.ask(
+                    message
+                )
             )
 
             answer = response.get(
@@ -526,7 +812,9 @@ class RAGApplication:
                 ""
             )
 
-            history = history or []
+            history = (
+                history or []
+            )
 
             history.append(
                 {
@@ -550,9 +838,12 @@ class RAGApplication:
             print(
                 "ERROR WHILE ANSWERING:"
             )
+
             print(exc)
 
-            history = history or []
+            history = (
+                history or []
+            )
 
             history.append(
                 {
@@ -565,7 +856,8 @@ class RAGApplication:
                 {
                     "role": "assistant",
                     "content": (
-                        f"Unable to answer the question: {exc}"
+                        f"Unable to answer "
+                        f"the question: {exc}"
                     ),
                 }
             )
