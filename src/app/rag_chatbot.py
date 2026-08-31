@@ -1,8 +1,7 @@
 import os
 import time
 from typing import Any, Dict, List, Tuple, Iterator
-
-
+from src.app.conversation_memory import ConversationMemory
 
 class RAGChatbot:
     """
@@ -76,6 +75,9 @@ class RAGChatbot:
         self.prompt_builder = prompt_builder
         self.openapi_client = openapi_client
         self.chunks = chunks
+        self.memory = ConversationMemory(
+            max_interactions=4
+        )
 
         # -----------------------------------------------------
         # Configuration
@@ -158,32 +160,79 @@ class RAGChatbot:
             f"{self.max_context_chars}"
         )
 
+
+    # =========================================================
+    # SELECT CONTEXT
+    # =========================================================
+
+    def _select_context(
+        self,
+        results
+    ):
+        """
+        Select the final results used as LLM context.
+
+        Selection is limited by:
+
+            1. Maximum number of context results
+            2. Maximum context characters
+
+        The ranking/order produced by the reranker is preserved.
+        """
+
+        selected = []
+
+        total_chars = 0
+
+        for result in results:
+
+            text = result.get(
+                "text",
+                ""
+            )
+
+            if not text:
+                continue
+
+            text_length = len(text)
+
+            # -------------------------------------------------
+            # Maximum result count
+            # -------------------------------------------------
+
+            if len(selected) >= (
+                self.max_context_results
+            ):
+                break
+
+            # -------------------------------------------------
+            # Maximum context characters
+            # -------------------------------------------------
+
+            if (
+                total_chars + text_length
+                > self.max_context_chars
+            ):
+
+                # Do not partially cut a result.
+                break
+
+            selected.append(
+                result
+            )
+
+            total_chars += text_length
+
+        return selected
+
     # =========================================================
     # ASK
     # =========================================================
 
     def ask(
         self,
-        question: str,
-    ) -> Dict[str, Any]:
-        """
-        Run the complete RAG pipeline.
-
-        Returns:
-
-            {
-                "answer": str,
-                "results": list,
-                "sources": list
-            }
-        """
-
-        if not question or not question.strip():
-            return {
-                "answer": self.FALLBACK_MESSAGE,
-                "results": [],
-                "sources": [],
-            }
+        question
+    ):
 
         print()
         print("=" * 70)
@@ -194,9 +243,23 @@ class RAGChatbot:
             f"Question: {question}"
         )
 
-        # -----------------------------------------------------
-        # 1. RETRIEVE
-        # -----------------------------------------------------
+        # =====================================================
+        # 1. GET CONVERSATION MEMORY
+        # =====================================================
+
+        conversation_history = (
+            self.memory.format_history()
+        )
+
+        print()
+        print(
+            f"Memory interactions: "
+            f"{self.memory.count()}"
+        )
+
+        # =====================================================
+        # 2. RETRIEVE
+        # =====================================================
 
         print()
         print("1. Retrieving documents...")
@@ -205,52 +268,111 @@ class RAGChatbot:
             question
         )
 
-        if not results:
-            return {
-                "answer": self.FALLBACK_MESSAGE,
-                "results": [],
-                "sources": [],
-            }
-
         print(
             f"Retrieved: {len(results)}"
         )
 
-        # -----------------------------------------------------
-        # 2. RERANK
-        # -----------------------------------------------------
+        # =====================================================
+        # 3. RERANK
+        # =====================================================
 
         print()
         print("2. Reranking documents...")
 
         reranked = self._rerank(
             question,
-            results,
+            results
         )
-
-        if not reranked:
-            return {
-                "answer": self.FALLBACK_MESSAGE,
-                "results": [],
-                "sources": [],
-            }
 
         print(
             f"Reranked: {len(reranked)}"
         )
 
-        # -----------------------------------------------------
-        # 3. BUILD CONTEXT
-        # -----------------------------------------------------
+        # =====================================================
+        # 4. BUILD CONTEXT
+        # =====================================================
 
         print()
         print("3. Building context...")
 
-        context, selected_results = (
-            self.build_context(
+        context_results = (
+            self._select_context(
                 reranked
             )
         )
+
+        context = self.build_context(
+            context_results
+        )
+
+        print(
+            f"Context results: "
+            f"{len(context_results)}"
+        )
+
+        print(
+            f"Context characters: "
+            f"{len(context)}"
+        )
+
+        # =====================================================
+        # 5. BUILD PROMPT
+        # =====================================================
+
+        print()
+        print("4. Building prompt...")
+
+        prompt = (
+            self.prompt_builder.build_prompt(
+                question=question,
+                context=context,
+                conversation_history=(
+                    conversation_history
+                )
+            )
+        )
+
+        print(
+            f"Prompt characters: "
+            f"{len(prompt)}"
+        )
+
+        # =====================================================
+        # 6. GENERATE ANSWER
+        # =====================================================
+
+        print()
+        print("5. Generating answer...")
+
+        answer = self.openapi_client.generate(
+            prompt=prompt,
+            model=self.model,
+            temperature=self.temperature,
+            max_tokens=self.max_tokens
+        )
+
+        # =====================================================
+        # 7. SAVE MEMORY
+        # =====================================================
+
+        self.memory.add(
+            question=question,
+            answer=answer
+        )
+
+        # =====================================================
+        # 8. SOURCES
+        # =====================================================
+
+        sources = self.build_sources(
+            context_results
+        )
+
+        return {
+            "answer": answer,
+            "results": context_results,
+            "sources": sources
+        }
 
         # -----------------------------------------------------
         # IMPORTANT:
