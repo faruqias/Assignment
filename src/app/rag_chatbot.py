@@ -11,17 +11,23 @@ class RAGChatbot:
 
         Question
             ↓
-        Retriever
+        Conversation Memory
             ↓
-        BGE Reranker
+        Hybrid Retriever
             ↓
-        Context Limiting
+        BGE Reranker (optional)
             ↓
-        PromptBuilder
+        Context Selection
+            ↓
+        Prompt Builder
             ↓
         Azure OpenAI
             ↓
-        Answer + Sources
+        Answer
+            ↓
+        Conversation Memory
+            ↓
+        Sources
 
     Responsibilities:
         - Retrieve relevant documents
@@ -30,6 +36,7 @@ class RAGChatbot:
         - Build prompt
         - Generate answer
         - Stream answer
+        - Maintain conversation memory
         - Track exact source chunks used
 
     Does NOT handle:
@@ -37,16 +44,16 @@ class RAGChatbot:
         - Parsing
         - Chunking
         - Embedding generation
-        - FAISS
-        - BM25
-        - RRF
+        - FAISS creation
+        - BM25 creation
+        - RRF creation
     """
 
-    DEFAULT_MODEL = "gpt-5.4-mini"
-    DEFAULT_TEMPERATURE = 0.1
-    DEFAULT_MAX_TOKENS = 200
-    DEFAULT_MAX_CONTEXT_RESULTS = 3
-    DEFAULT_MAX_CONTEXT_CHARS = 5000
+    DEFAULT_MODEL = os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT", "gpt-5.4-mini")
+    DEFAULT_TEMPERATURE = float(os.getenv("TEMPERATURE", "0.1"))
+    DEFAULT_MAX_TOKENS = int(os.getenv("OLLAMA_MAX_TOKENS", "500"))
+    DEFAULT_MAX_CONTEXT_RESULTS = int(os.getenv("MAX_CONTEXT_RESULTS", "3"))
+    DEFAULT_MAX_CONTEXT_CHARS = int(os.getenv("MAX_CONTEXT_CHARS", "5000"))
 
     FALLBACK_MESSAGE = (
         "I couldn't find this information "
@@ -66,22 +73,28 @@ class RAGChatbot:
         max_context_results=None,
         max_context_chars=None,
     ):
-        # -----------------------------------------------------
-        # Dependencies
-        # -----------------------------------------------------
+
+        # =====================================================
+        # DEPENDENCIES
+        # =====================================================
 
         self.retriever = retriever
         self.reranker = reranker
         self.prompt_builder = prompt_builder
         self.openapi_client = openapi_client
         self.chunks = chunks
+
+        # =====================================================
+        # CONVERSATION MEMORY
+        # =====================================================
+
         self.memory = ConversationMemory(
             max_interactions=4
         )
 
-        # -----------------------------------------------------
-        # Configuration
-        # -----------------------------------------------------
+        # =====================================================
+        # CONFIGURATION
+        # =====================================================
 
         self.model = (
             model
@@ -137,93 +150,36 @@ class RAGChatbot:
 
         if not self.model:
             raise ValueError(
-                "AZURE_OPENAI_CHAT_DEPLOYMENT is not configured."
+                "AZURE_OPENAI_CHAT_DEPLOYMENT "
+                "is not configured."
             )
 
-        # -----------------------------------------------------
-        # Exact chunks sent to LLM
-        #
-        # This is important for source propagation.
-        # -----------------------------------------------------
+        # =====================================================
+        # EXACT RESULTS USED BY LLM
+        # =====================================================
 
         self.last_context_results: List[Any] = []
 
+        # =====================================================
+        # STARTUP INFORMATION
+        # =====================================================
+
         print()
         print("RAG Chatbot")
-        print(f"LLM Model: {self.model}")
+
+        print(
+            f"LLM Model: {self.model}"
+        )
+
         print(
             f"Max context results: "
             f"{self.max_context_results}"
         )
+
         print(
             f"Max context chars: "
             f"{self.max_context_chars}"
         )
-
-
-    # =========================================================
-    # SELECT CONTEXT
-    # =========================================================
-
-    def _select_context(
-        self,
-        results
-    ):
-        """
-        Select the final results used as LLM context.
-
-        Selection is limited by:
-
-            1. Maximum number of context results
-            2. Maximum context characters
-
-        The ranking/order produced by the reranker is preserved.
-        """
-
-        selected = []
-
-        total_chars = 0
-
-        for result in results:
-
-            text = result.get(
-                "text",
-                ""
-            )
-
-            if not text:
-                continue
-
-            text_length = len(text)
-
-            # -------------------------------------------------
-            # Maximum result count
-            # -------------------------------------------------
-
-            if len(selected) >= (
-                self.max_context_results
-            ):
-                break
-
-            # -------------------------------------------------
-            # Maximum context characters
-            # -------------------------------------------------
-
-            if (
-                total_chars + text_length
-                > self.max_context_chars
-            ):
-
-                # Do not partially cut a result.
-                break
-
-            selected.append(
-                result
-            )
-
-            total_chars += text_length
-
-        return selected
 
     # =========================================================
     # ASK
@@ -231,8 +187,16 @@ class RAGChatbot:
 
     def ask(
         self,
-        question
-    ):
+        question: str,
+    ) -> Dict[str, Any]:
+
+        if not question or not question.strip():
+
+            return {
+                "answer": self.FALLBACK_MESSAGE,
+                "results": [],
+                "sources": [],
+            }
 
         print()
         print("=" * 70)
@@ -244,7 +208,7 @@ class RAGChatbot:
         )
 
         # =====================================================
-        # 1. GET CONVERSATION MEMORY
+        # 1. CONVERSATION MEMORY
         # =====================================================
 
         conversation_history = (
@@ -272,6 +236,18 @@ class RAGChatbot:
             f"Retrieved: {len(results)}"
         )
 
+        if not results:
+
+            print(
+                "No retrieval results found."
+            )
+
+            return {
+                "answer": self.FALLBACK_MESSAGE,
+                "results": [],
+                "sources": [],
+            }
+
         # =====================================================
         # 3. RERANK
         # =====================================================
@@ -281,15 +257,23 @@ class RAGChatbot:
 
         reranked = self._rerank(
             question,
-            results
+            results,
         )
 
         print(
             f"Reranked: {len(reranked)}"
         )
 
+        if not reranked:
+
+            return {
+                "answer": self.FALLBACK_MESSAGE,
+                "results": [],
+                "sources": [],
+            }
+
         # =====================================================
-        # 4. BUILD CONTEXT
+        # 4. SELECT CONTEXT
         # =====================================================
 
         print()
@@ -300,6 +284,15 @@ class RAGChatbot:
                 reranked
             )
         )
+
+        # Store exact chunks used by LLM.
+        self.last_context_results = (
+            context_results
+        )
+
+        # =====================================================
+        # 5. BUILD CONTEXT
+        # =====================================================
 
         context = self.build_context(
             context_results
@@ -312,11 +305,21 @@ class RAGChatbot:
 
         print(
             f"Context characters: "
-            f"{len(context)}"
+            f"{len(context):,}"
         )
 
+        if not context.strip():
+
+            self.last_context_results = []
+
+            return {
+                "answer": self.FALLBACK_MESSAGE,
+                "results": [],
+                "sources": [],
+            }
+
         # =====================================================
-        # 5. BUILD PROMPT
+        # 6. BUILD PROMPT
         # =====================================================
 
         print()
@@ -328,89 +331,7 @@ class RAGChatbot:
                 context=context,
                 conversation_history=(
                     conversation_history
-                )
-            )
-        )
-
-        print(
-            f"Prompt characters: "
-            f"{len(prompt)}"
-        )
-
-        # =====================================================
-        # 6. GENERATE ANSWER
-        # =====================================================
-
-        print()
-        print("5. Generating answer...")
-
-        answer = self.openapi_client.generate(
-            prompt=prompt,
-            model=self.model,
-            temperature=self.temperature,
-            max_tokens=self.max_tokens
-        )
-
-        # =====================================================
-        # 7. SAVE MEMORY
-        # =====================================================
-
-        self.memory.add(
-            question=question,
-            answer=answer
-        )
-
-        # =====================================================
-        # 8. SOURCES
-        # =====================================================
-
-        sources = self.build_sources(
-            context_results
-        )
-
-        return {
-            "answer": answer,
-            "results": context_results,
-            "sources": sources
-        }
-
-        # -----------------------------------------------------
-        # IMPORTANT:
-        # Store EXACT results used by LLM.
-        # -----------------------------------------------------
-
-        self.last_context_results = (
-            selected_results
-        )
-
-        print(
-            f"Context results: "
-            f"{len(selected_results)}"
-        )
-
-        print(
-            f"Context characters: "
-            f"{len(context):,}"
-        )
-
-        if not context.strip():
-            return {
-                "answer": self.FALLBACK_MESSAGE,
-                "results": [],
-                "sources": [],
-            }
-
-        # -----------------------------------------------------
-        # 4. PROMPT
-        # -----------------------------------------------------
-
-        print()
-        print("4. Building prompt...")
-
-        prompt = (
-            self.prompt_builder.build_prompt(
-                question=question,
-                context=context,
+                ),
             )
         )
 
@@ -419,9 +340,9 @@ class RAGChatbot:
             f"{len(prompt):,}"
         )
 
-        # -----------------------------------------------------
-        # 5. GENERATE
-        # -----------------------------------------------------
+        # =====================================================
+        # 7. GENERATE ANSWER
+        # =====================================================
 
         print()
         print("5. Generating answer...")
@@ -431,19 +352,29 @@ class RAGChatbot:
         )
 
         if not answer:
+
             answer = self.FALLBACK_MESSAGE
 
-        # -----------------------------------------------------
-        # 6. SOURCES
-        # -----------------------------------------------------
+        # =====================================================
+        # 8. SAVE CONVERSATION MEMORY
+        # =====================================================
+
+        self.memory.add(
+            question=question,
+            answer=answer,
+        )
+
+        # =====================================================
+        # 9. SOURCES
+        # =====================================================
 
         sources = self.build_sources(
-            selected_results
+            context_results
         )
 
         return {
             "answer": answer,
-            "results": selected_results,
+            "results": context_results,
             "sources": sources,
         }
 
@@ -455,29 +386,11 @@ class RAGChatbot:
         self,
         question: str,
     ) -> Iterator[str]:
-        """
-        Run the RAG pipeline and stream the answer.
-
-        The method performs:
-
-            retrieve
-                ↓
-            rerank
-                ↓
-            context
-                ↓
-            prompt
-                ↓
-            Azure OpenAI streaming
-        """
 
         if not question or not question.strip():
+
             yield self.FALLBACK_MESSAGE
             return
-
-        # -----------------------------------------------------
-        # Retrieve
-        # -----------------------------------------------------
 
         print()
         print("=" * 70)
@@ -488,6 +401,24 @@ class RAGChatbot:
             f"Question: {question}"
         )
 
+        # =====================================================
+        # 1. MEMORY
+        # =====================================================
+
+        conversation_history = (
+            self.memory.format_history()
+        )
+
+        print()
+        print(
+            f"Memory interactions: "
+            f"{self.memory.count()}"
+        )
+
+        # =====================================================
+        # 2. RETRIEVE
+        # =====================================================
+
         print()
         print("1. Retrieving documents...")
 
@@ -495,17 +426,18 @@ class RAGChatbot:
             question
         )
 
-        if not results:
-            yield self.FALLBACK_MESSAGE
-            return
-
         print(
             f"Retrieved: {len(results)}"
         )
 
-        # -----------------------------------------------------
-        # Rerank
-        # -----------------------------------------------------
+        if not results:
+
+            yield self.FALLBACK_MESSAGE
+            return
+
+        # =====================================================
+        # 3. RERANK
+        # =====================================================
 
         print()
         print("2. Reranking documents...")
@@ -515,28 +447,37 @@ class RAGChatbot:
             results,
         )
 
-        if not reranked:
-            yield self.FALLBACK_MESSAGE
-            return
-
         print(
             f"Reranked: {len(reranked)}"
         )
 
-        # -----------------------------------------------------
-        # Context
-        # -----------------------------------------------------
+        if not reranked:
+
+            yield self.FALLBACK_MESSAGE
+            return
+
+        # =====================================================
+        # 4. SELECT CONTEXT
+        # =====================================================
 
         print()
         print("3. Building context...")
 
-        context, selected_results = (
-            self.build_context(
+        selected_results = (
+            self._select_context(
                 reranked
             )
         )
 
         self.last_context_results = (
+            selected_results
+        )
+
+        # =====================================================
+        # 5. BUILD CONTEXT
+        # =====================================================
+
+        context = self.build_context(
             selected_results
         )
 
@@ -551,18 +492,41 @@ class RAGChatbot:
         )
 
         if not context.strip():
+
+            self.last_context_results = []
+
             yield self.FALLBACK_MESSAGE
             return
 
-        # -----------------------------------------------------
-        # Prompt
-        # -----------------------------------------------------
+        # =====================================================
+        # 6. BUILD PROMPT
+        # =====================================================
+
+        print()
+        print("4. Building prompt...")
 
         prompt = (
             self.prompt_builder.build_prompt(
                 question=question,
                 context=context,
+                conversation_history=(
+                    conversation_history
+                ),
             )
+        )
+
+        print(
+            f"Prompt characters: "
+            f"{len(prompt):,}"
+        )
+
+        # =====================================================
+        # 7. STREAM FROM LLM
+        # =====================================================
+
+        print()
+        print(
+            "5. Generating answer..."
         )
 
         print()
@@ -589,20 +553,28 @@ class RAGChatbot:
             f"{len(prompt):,} characters"
         )
 
-        # -----------------------------------------------------
-        # LLM streaming / compatibility
-        # -----------------------------------------------------
-
         start_time = time.perf_counter()
 
         first_token_time = None
 
-        if hasattr(self.openapi_client, "stream"):
-            response_stream = self.openapi_client.stream(
-                prompt=prompt,
-                model=self.model,
-                temperature=self.temperature,
-                max_tokens=self.max_tokens,
+        complete_answer = ""
+
+        # =====================================================
+        # STREAMING CLIENT
+        # =====================================================
+
+        if hasattr(
+            self.openapi_client,
+            "stream",
+        ):
+
+            response_stream = (
+                self.openapi_client.stream(
+                    prompt=prompt,
+                    model=self.model,
+                    temperature=self.temperature,
+                    max_tokens=self.max_tokens,
+                )
             )
 
             for token in response_stream:
@@ -610,37 +582,58 @@ class RAGChatbot:
                 if not token:
                     continue
 
+                token = str(token)
+
+                complete_answer += token
+
                 if first_token_time is None:
+
                     first_token_time = (
                         time.perf_counter()
                         - start_time
                     )
+
                     print(
                         f"First token: "
                         f"{first_token_time:.3f} sec"
                     )
 
                 yield token
+
+        # =====================================================
+        # FALLBACK TO GENERATE()
+        # =====================================================
+
         else:
-            response = self.openapi_client.generate(
-                prompt=prompt,
-                model=self.model,
-                temperature=self.temperature,
-                max_tokens=self.max_tokens,
+
+            response = (
+                self.openapi_client.generate(
+                    prompt=prompt,
+                    model=self.model,
+                    temperature=self.temperature,
+                    max_tokens=self.max_tokens,
+                )
             )
 
-            answer = self._extract_answer(response)
+            complete_answer = (
+                self._extract_answer(
+                    response
+                )
+            )
 
-            if answer:
+            if complete_answer:
+
                 first_token_time = (
                     time.perf_counter()
                     - start_time
                 )
+
                 print(
                     f"First token: "
                     f"{first_token_time:.3f} sec"
                 )
-                yield answer
+
+                yield complete_answer
 
         total_time = (
             time.perf_counter()
@@ -652,153 +645,41 @@ class RAGChatbot:
             f"{total_time:.3f} sec"
         )
 
-    # =========================================================
-    # GENERATE COMPLETE ANSWER
-    # =========================================================
+        # =====================================================
+        # SAVE MEMORY AFTER STREAM COMPLETES
+        # =====================================================
 
-    def _generate(
-        self,
-        prompt: str,
-    ) -> str:
-        """
-        Generate a complete answer using the configured LLM client.
-        """
+        if complete_answer.strip():
 
-        print()
-        print(
-            "Sending prompt to Azure OpenAI..."
-        )
-
-        print(
-            f"Model      : {self.model}"
-        )
-
-        print(
-            f"Prompt     : "
-            f"{len(prompt):,} characters"
-        )
-
-        start_time = time.perf_counter()
-
-        response = self.openapi_client.generate(
-            prompt=prompt,
-            model=self.model,
-            temperature=self.temperature,
-            max_tokens=self.max_tokens,
-        )
-
-        elapsed = (
-            time.perf_counter()
-            - start_time
-        )
-
-        print(
-            f"LLM total: "
-            f"{elapsed:.3f} sec"
-        )
-
-        return self._extract_answer(
-            response
-        )
-
-    # =========================================================
-    # ANSWER FROM PRE-RETRIEVED RESULTS
-    # =========================================================
-
-    def answer(
-        self,
-        question: str,
-        results: List[Any],
-    ) -> str:
-        """
-        Generate an answer from already reranked results.
-
-        Useful for testing/backward compatibility.
-        """
-
-        if not question or not question.strip():
-            return self.FALLBACK_MESSAGE
-
-        if not results:
-            return self.FALLBACK_MESSAGE
-
-        context, selected_results = (
-            self.build_context(
-                results
-            )
-        )
-
-        self.last_context_results = (
-            selected_results
-        )
-
-        if not context.strip():
-            return self.FALLBACK_MESSAGE
-
-        prompt = (
-            self.prompt_builder.build_prompt(
+            self.memory.add(
                 question=question,
-                context=context,
+                answer=complete_answer,
             )
-        )
-
-        return self._generate(
-            prompt
-        )
 
     # =========================================================
-    # RERANK
+    # SELECT CONTEXT
     # =========================================================
 
-    def _rerank(
+    def _select_context(
         self,
-        question: str,
         results: List[Any],
     ) -> List[Any]:
+        """
+        Select complete chunks for the LLM.
+
+        Limits:
+
+            max_context_results
+            max_context_chars
+
+        A chunk is either included completely
+        or excluded.
+
+        No chunk is partially truncated.
+        """
 
         if not results:
             return []
-
-        if self.reranker is None:
-            return results
-
-        return self.reranker.rerank(
-            question,
-            results,
-            self.chunks,
-        )
-
-    
-
-    # =========================================================
-    # BUILD CONTEXT
-    # =========================================================
-
-    def build_context(
-        self,
-        results: List[Any],
-    ) -> Tuple[str, List[Any]]:
-        """
-        Build bounded LLM context.
-
-        Returns:
-
-            (
-                context_string,
-                exact_results_used
-            )
-
-        max_context_results limits the number of chunks.
-
-        max_context_chars limits total context characters.
-
-        There is intentionally NO final hard truncation.
-
-        The selection loop itself controls the limit.
-        """
-
-        if not results:
-            return "", []
 
         selected = []
 
@@ -819,63 +700,131 @@ class RAGChatbot:
                 continue
 
             # -------------------------------------------------
-            # Calculate remaining context capacity.
+            # Account for separator between chunks.
             # -------------------------------------------------
 
-            remaining = (
-                self.max_context_chars
-                - total_chars
+            separator_chars = (
+                2 if selected else 0
             )
 
-            if remaining <= 0:
-                break
+            required_chars = (
+                separator_chars
+                + len(text)
+            )
 
-            # -------------------------------------------------
-            # Limit individual result to remaining capacity.
-            # -------------------------------------------------
+            if (
+                total_chars
+                + required_chars
+                > self.max_context_chars
+            ):
 
-            if len(text) > remaining:
-
-                text = (
-                    text[:remaining]
-                    .rstrip()
-                )
-
-            if not text:
+                # Do not partially truncate
+                # a chunk.
                 continue
 
             selected.append(
-                (
-                    result,
-                    text,
-                )
+                result
             )
 
-            total_chars += len(text)
+            total_chars += required_chars
 
-            # Separator overhead.
-            total_chars += 2
+        return selected
 
-            if total_chars >= (
-                self.max_context_chars
-            ):
-                break
+    # =========================================================
+    # RERANK
+    # =========================================================
+
+    def _rerank(
+        self,
+        question: str,
+        results: List[Any],
+    ) -> List[Any]:
+
+        if not results:
+            return []
 
         # -----------------------------------------------------
-        # Build final context.
+        # No reranker configured
         # -----------------------------------------------------
+
+        if self.reranker is None:
+
+            print(
+                "BGE Reranker: SKIPPED"
+            )
+
+            return results
+
+        # -----------------------------------------------------
+        # Reranker handles enabled/disabled
+        # internally.
+        # -----------------------------------------------------
+
+        return self.reranker.rerank(
+            question,
+            results,
+            self.chunks,
+        )
+
+    # =========================================================
+    # BUILD CONTEXT
+    # =========================================================
+
+    def build_context(
+        self,
+        results: List[Any],
+    ) -> str:
+        """
+        Format already-selected results.
+
+        IMPORTANT:
+
+        This method does NOT perform selection.
+
+        _select_context() is responsible for:
+
+            max_context_results
+            max_context_chars
+
+        This method only formats the selected chunks.
+
+        There is intentionally NO final hard truncation.
+        """
+
+        if not results:
+            return ""
 
         context_parts = []
 
-        selected_results = []
+        for result in results:
 
-        for result, text in selected:
+            text = self._get_text(
+                result
+            )
+
+            if not text:
+                continue
 
             metadata = self._get_metadata(
                 result
             )
 
             header_parts = []
+
+            # -------------------------------------------------
+            # Document
+            # -------------------------------------------------
+
+            document_name = metadata.get(
+                "document_name"
+            )
+
+            if document_name:
+
+                header_parts.append(
+                    f"Document: "
+                    f"{document_name}"
+                )
 
             # -------------------------------------------------
             # Section
@@ -906,7 +855,8 @@ class RAGChatbot:
                     )
 
                 header_parts.append(
-                    f"Section: {section_text}"
+                    f"Section: "
+                    f"{section_text}"
                 )
 
             # -------------------------------------------------
@@ -930,46 +880,205 @@ class RAGChatbot:
 
                     header_parts.append(
                         f"Pages: "
-                        f"{page_start}-{page_end}"
+                        f"{page_start}-"
+                        f"{page_end}"
                     )
 
                 else:
 
                     header_parts.append(
-                        f"Page: {page_start}"
+                        f"Page: "
+                        f"{page_start}"
                     )
 
             # -------------------------------------------------
-            # Add metadata only when available.
+            # Chunk
             # -------------------------------------------------
+
+            chunk_id = metadata.get(
+                "chunk_id"
+            )
+
+            if chunk_id:
+
+                header_parts.append(
+                    f"Chunk: "
+                    f"{chunk_id}"
+                )
+
+            # -------------------------------------------------
+            # Build block
+            # -------------------------------------------------
+
+            block_parts = []
 
             if header_parts:
 
-                context_parts.append(
+                block_parts.append(
                     "\n".join(
                         header_parts
                     )
                 )
 
-            context_parts.append(
+            block_parts.append(
                 text
             )
 
-            # -------------------------------------------------
-            # EXACT result used by LLM.
-            # -------------------------------------------------
-
-            selected_results.append(
-                result
+            context_parts.append(
+                "\n".join(
+                    block_parts
+                )
             )
 
-        context = "\n\n".join(
+        return "\n\n".join(
             context_parts
         )
 
-        return (
-            context,
-            selected_results,
+    # =========================================================
+    # ANSWER FROM PRE-RETRIEVED RESULTS
+    # =========================================================
+
+    def answer(
+        self,
+        question: str,
+        results: List[Any],
+    ) -> str:
+        """
+        Generate an answer from already-retrieved
+        or already-reranked results.
+
+        Useful for tests/backward compatibility.
+        """
+
+        if not question or not question.strip():
+
+            return self.FALLBACK_MESSAGE
+
+        if not results:
+
+            return self.FALLBACK_MESSAGE
+
+        # -----------------------------------------------------
+        # Select context
+        # -----------------------------------------------------
+
+        selected_results = (
+            self._select_context(
+                results
+            )
+        )
+
+        self.last_context_results = (
+            selected_results
+        )
+
+        # -----------------------------------------------------
+        # Build context
+        # -----------------------------------------------------
+
+        context = self.build_context(
+            selected_results
+        )
+
+        if not context.strip():
+
+            return self.FALLBACK_MESSAGE
+
+        # -----------------------------------------------------
+        # Conversation history
+        # -----------------------------------------------------
+
+        conversation_history = (
+            self.memory.format_history()
+        )
+
+        # -----------------------------------------------------
+        # Prompt
+        # -----------------------------------------------------
+
+        prompt = (
+            self.prompt_builder.build_prompt(
+                question=question,
+                context=context,
+                conversation_history=(
+                    conversation_history
+                ),
+            )
+        )
+
+        # -----------------------------------------------------
+        # Generate
+        # -----------------------------------------------------
+
+        answer = self._generate(
+            prompt
+        )
+
+        if not answer:
+
+            return self.FALLBACK_MESSAGE
+
+        # -----------------------------------------------------
+        # Memory
+        # -----------------------------------------------------
+
+        self.memory.add(
+            question=question,
+            answer=answer,
+        )
+
+        return answer
+
+    # =========================================================
+    # GENERATE COMPLETE ANSWER
+    # =========================================================
+
+    def _generate(
+        self,
+        prompt: str,
+    ) -> str:
+        """
+        Generate a complete answer using the
+        configured LLM client.
+        """
+
+        print()
+        print(
+            "Sending prompt to Azure OpenAI..."
+        )
+
+        print(
+            f"Model      : {self.model}"
+        )
+
+        print(
+            f"Prompt     : "
+            f"{len(prompt):,} characters"
+        )
+
+        start_time = time.perf_counter()
+
+        response = (
+            self.openapi_client.generate(
+                prompt=prompt,
+                model=self.model,
+                temperature=self.temperature,
+                max_tokens=self.max_tokens,
+            )
+        )
+
+        elapsed = (
+            time.perf_counter()
+            - start_time
+        )
+
+        print(
+            f"Azure OpenAI total: "
+            f"{elapsed:.3f} sec"
+        )
+
+        return self._extract_answer(
+            response
         )
 
     # =========================================================
@@ -981,14 +1090,15 @@ class RAGChatbot:
         results: List[Any],
     ) -> List[Dict[str, Any]]:
         """
-        Build source metadata from the exact results
-        used as LLM context.
+        Build source metadata from the exact
+        chunks used as LLM context.
         """
 
         if not results:
             return []
 
         sources = []
+
         seen = set()
 
         for result in results:
@@ -1007,6 +1117,14 @@ class RAGChatbot:
                 )
             )
 
+            document_id = metadata.get(
+                "document_id"
+            )
+
+            document_name = metadata.get(
+                "document_name"
+            )
+
             page_start = metadata.get(
                 "page_start"
             )
@@ -1020,16 +1138,9 @@ class RAGChatbot:
                 []
             )
 
-            document_name = metadata.get(
-                "document_name"
-            )
-
-            document_id = metadata.get(
-                "document_id"
-            )
-
             key = (
                 document_id,
+                document_name,
                 chunk_id,
                 page_start,
                 page_end,
@@ -1073,7 +1184,7 @@ class RAGChatbot:
     ) -> str:
 
         # -----------------------------------------------------
-        # LangChain Document style
+        # LangChain Document
         # -----------------------------------------------------
 
         value = self._get_value(
@@ -1083,12 +1194,13 @@ class RAGChatbot:
         )
 
         if value:
+
             return str(
                 value
             ).strip()
 
         # -----------------------------------------------------
-        # Dictionary style
+        # Dictionary
         # -----------------------------------------------------
 
         if isinstance(
@@ -1102,6 +1214,7 @@ class RAGChatbot:
             )
 
             if value:
+
                 return str(
                     value
                 ).strip()
@@ -1119,31 +1232,28 @@ class RAGChatbot:
         """
         Resolve metadata from a retrieval result.
 
-        Supports both:
+        Supports:
 
             {
-                "metadata": {
-                    "page_start": 1,
-                    "page_end": 2
-                }
+                "metadata": {...}
             }
 
         and:
 
             {
-                "page_start": 1,
-                "page_end": 2
+                "page_start": 4,
+                "page_end": 4
             }
 
-        Top-level fields are merged into nested metadata
-        without overwriting valid nested values.
+        Nested metadata takes precedence over
+        top-level metadata.
         """
 
         metadata = {}
 
-        # ---------------------------------------------------------
-        # Nested metadata
-        # ---------------------------------------------------------
+        # =====================================================
+        # NESTED METADATA
+        # =====================================================
 
         nested = self._get_value(
             result,
@@ -1160,26 +1270,30 @@ class RAGChatbot:
                 nested
             )
 
-        # ---------------------------------------------------------
-        # Top-level metadata
-        # ---------------------------------------------------------
+        # =====================================================
+        # COMMON METADATA FIELDS
+        # =====================================================
+
+        metadata_fields = (
+            "chunk_id",
+            "document_id",
+            "document_name",
+            "content_type",
+            "page_start",
+            "page_end",
+            "section_path",
+            "caption",
+            "document_part",
+        )
+
+        # =====================================================
+        # DICTIONARY
+        # =====================================================
 
         if isinstance(
             result,
             dict,
         ):
-
-            metadata_fields = (
-                "chunk_id",
-                "document_id",
-                "document_name",
-                "content_type",
-                "page_start",
-                "page_end",
-                "section_path",
-                "caption",
-                "document_part",
-            )
 
             for field in metadata_fields:
 
@@ -1189,9 +1303,6 @@ class RAGChatbot:
 
                 if value is not None:
 
-                    # Top-level value is used only
-                    # when nested metadata doesn't
-                    # already contain a value.
                     if (
                         field not in metadata
                         or metadata[field] is None
@@ -1199,23 +1310,11 @@ class RAGChatbot:
 
                         metadata[field] = value
 
-        # ---------------------------------------------------------
-        # Object attributes
-        # ---------------------------------------------------------
+        # =====================================================
+        # OBJECT
+        # =====================================================
 
         else:
-
-            metadata_fields = (
-                "chunk_id",
-                "document_id",
-                "document_name",
-                "content_type",
-                "page_start",
-                "page_end",
-                "section_path",
-                "caption",
-                "document_part",
-            )
 
             for field in metadata_fields:
 
@@ -1248,12 +1347,14 @@ class RAGChatbot:
     ):
 
         if obj is None:
+
             return default
 
         if isinstance(
             obj,
             dict,
         ):
+
             return obj.get(
                 attribute,
                 default,
@@ -1275,13 +1376,23 @@ class RAGChatbot:
     ) -> str:
 
         if response is None:
+
             return ""
+
+        # -----------------------------------------------------
+        # Plain string
+        # -----------------------------------------------------
 
         if isinstance(
             response,
             str,
         ):
+
             return response.strip()
+
+        # -----------------------------------------------------
+        # Dictionary
+        # -----------------------------------------------------
 
         if isinstance(
             response,
@@ -1300,9 +1411,14 @@ class RAGChatbot:
                 )
 
                 if value:
+
                     return str(
                         value
                     ).strip()
+
+        # -----------------------------------------------------
+        # Object
+        # -----------------------------------------------------
 
         value = getattr(
             response,
@@ -1311,6 +1427,7 @@ class RAGChatbot:
         )
 
         if value:
+
             return str(
                 value
             ).strip()
@@ -1322,6 +1439,7 @@ class RAGChatbot:
         )
 
         if value:
+
             return str(
                 value
             ).strip()

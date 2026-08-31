@@ -123,15 +123,15 @@ with gr.Blocks(
                 render_markdown=True
             )
 
-            clear_chat = gr.Button(
-                "Clear Conversation"
-            )
+            # clear_chat = gr.Button(
+            #     "Clear Conversation"
+            # )
 
-            clear_chat.click(
-                fn=clear_conversation,
-                inputs=None,
-                outputs=chatbot
-            )
+            # clear_chat.click(
+            #     fn=clear_conversation,
+            #     inputs=None,
+            #     outputs=chatbot
+            # )
 
             message = gr.Textbox(
                 label="Question",
