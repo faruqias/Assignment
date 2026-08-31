@@ -2,7 +2,6 @@ import os
 import time
 from typing import Any, Dict, List, Tuple, Iterator
 
-import ollama
 
 
 class RAGChatbot:
@@ -21,7 +20,7 @@ class RAGChatbot:
             ↓
         PromptBuilder
             ↓
-        Ollama
+        Azure OpenAI
             ↓
         Answer + Sources
 
@@ -44,7 +43,7 @@ class RAGChatbot:
         - RRF
     """
 
-    DEFAULT_MODEL = "llama3.2:latest"
+    DEFAULT_MODEL = "gpt-5.4-mini"
     DEFAULT_TEMPERATURE = 0.1
     DEFAULT_MAX_TOKENS = 200
     DEFAULT_MAX_CONTEXT_RESULTS = 3
@@ -60,7 +59,7 @@ class RAGChatbot:
         retriever,
         reranker,
         prompt_builder,
-        llm_client,
+        openapi_client,
         chunks,
         model=None,
         temperature=None,
@@ -75,7 +74,7 @@ class RAGChatbot:
         self.retriever = retriever
         self.reranker = reranker
         self.prompt_builder = prompt_builder
-        self.llm_client = llm_client
+        self.openapi_client = openapi_client
         self.chunks = chunks
 
         # -----------------------------------------------------
@@ -85,7 +84,7 @@ class RAGChatbot:
         self.model = (
             model
             or os.getenv(
-                "OLLAMA_MODEL",
+                "AZURE_OPENAI_CHAT_DEPLOYMENT",
                 self.DEFAULT_MODEL,
             )
         )
@@ -95,7 +94,7 @@ class RAGChatbot:
             if temperature is not None
             else float(
                 os.getenv(
-                    "OLLAMA_TEMPERATURE",
+                    "AZURE_OPENAI_TEMPERATURE",
                     self.DEFAULT_TEMPERATURE,
                 )
             )
@@ -106,7 +105,7 @@ class RAGChatbot:
             if max_tokens is not None
             else int(
                 os.getenv(
-                    "OLLAMA_MAX_TOKENS",
+                    "AZURE_OPENAI_MAX_TOKENS",
                     self.DEFAULT_MAX_TOKENS,
                 )
             )
@@ -133,6 +132,11 @@ class RAGChatbot:
                 )
             )
         )
+
+        if not self.model:
+            raise ValueError(
+                "AZURE_OPENAI_CHAT_DEPLOYMENT is not configured."
+            )
 
         # -----------------------------------------------------
         # Exact chunks sent to LLM
@@ -342,7 +346,7 @@ class RAGChatbot:
                 ↓
             prompt
                 ↓
-            Ollama streaming
+            Azure OpenAI streaming
         """
 
         if not question or not question.strip():
@@ -441,7 +445,7 @@ class RAGChatbot:
 
         print()
         print(
-            "Sending prompt to Ollama..."
+            "Sending prompt to Azure OpenAI..."
         )
 
         print(
@@ -464,38 +468,57 @@ class RAGChatbot:
         )
 
         # -----------------------------------------------------
-        # Ollama streaming
+        # LLM streaming / compatibility
         # -----------------------------------------------------
 
         start_time = time.perf_counter()
 
         first_token_time = None
 
-        stream = self.llm_client.stream(
-            prompt=prompt,
-            model=self.model,
-            temperature=self.temperature,
-            max_tokens=self.max_tokens,
-        )
+        if hasattr(self.openapi_client, "stream"):
+            response_stream = self.openapi_client.stream(
+                prompt=prompt,
+                model=self.model,
+                temperature=self.temperature,
+                max_tokens=self.max_tokens,
+            )
 
-        for token in stream:
+            for token in response_stream:
 
-            if not token:
-                continue
+                if not token:
+                    continue
 
-            if first_token_time is None:
+                if first_token_time is None:
+                    first_token_time = (
+                        time.perf_counter()
+                        - start_time
+                    )
+                    print(
+                        f"First token: "
+                        f"{first_token_time:.3f} sec"
+                    )
 
+                yield token
+        else:
+            response = self.openapi_client.generate(
+                prompt=prompt,
+                model=self.model,
+                temperature=self.temperature,
+                max_tokens=self.max_tokens,
+            )
+
+            answer = self._extract_answer(response)
+
+            if answer:
                 first_token_time = (
                     time.perf_counter()
                     - start_time
                 )
-
                 print(
                     f"First token: "
                     f"{first_token_time:.3f} sec"
                 )
-
-            yield token
+                yield answer
 
         total_time = (
             time.perf_counter()
@@ -503,7 +526,7 @@ class RAGChatbot:
         )
 
         print(
-            f"Ollama total: "
+            f"LLM total: "
             f"{total_time:.3f} sec"
         )
 
@@ -516,12 +539,12 @@ class RAGChatbot:
         prompt: str,
     ) -> str:
         """
-        Generate a complete answer using OllamaClient.
+        Generate a complete answer using the configured LLM client.
         """
 
         print()
         print(
-            "Sending prompt to Ollama..."
+            "Sending prompt to Azure OpenAI..."
         )
 
         print(
@@ -535,7 +558,7 @@ class RAGChatbot:
 
         start_time = time.perf_counter()
 
-        response = self.llm_client.generate(
+        response = self.openapi_client.generate(
             prompt=prompt,
             model=self.model,
             temperature=self.temperature,
@@ -548,7 +571,7 @@ class RAGChatbot:
         )
 
         print(
-            f"Ollama total: "
+            f"LLM total: "
             f"{elapsed:.3f} sec"
         )
 
@@ -622,6 +645,8 @@ class RAGChatbot:
             results,
             self.chunks,
         )
+
+    
 
     # =========================================================
     # BUILD CONTEXT
@@ -842,7 +867,6 @@ class RAGChatbot:
             return []
 
         sources = []
-
         seen = set()
 
         for result in results:
@@ -854,9 +878,6 @@ class RAGChatbot:
             chunk_id = (
                 metadata.get(
                     "chunk_id"
-                )
-                or metadata.get(
-                    "id"
                 )
                 or self._get_value(
                     result,
@@ -874,10 +895,19 @@ class RAGChatbot:
 
             section_path = metadata.get(
                 "section_path",
-                [],
+                []
+            )
+
+            document_name = metadata.get(
+                "document_name"
+            )
+
+            document_id = metadata.get(
+                "document_id"
             )
 
             key = (
+                document_id,
                 chunk_id,
                 page_start,
                 page_end,
@@ -891,9 +921,21 @@ class RAGChatbot:
             sources.append(
                 {
                     "chunk_id": chunk_id,
-                    "page_start": page_start,
-                    "page_end": page_end,
-                    "section_path": section_path,
+
+                    "document_id":
+                        document_id,
+
+                    "document_name":
+                        document_name,
+
+                    "page_start":
+                        page_start,
+
+                    "page_end":
+                        page_end,
+
+                    "section_path":
+                        section_path,
                 }
             )
 
@@ -952,35 +994,125 @@ class RAGChatbot:
         self,
         result,
     ) -> Dict[str, Any]:
+        """
+        Resolve metadata from a retrieval result.
 
-        metadata = self._get_value(
+        Supports both:
+
+            {
+                "metadata": {
+                    "page_start": 1,
+                    "page_end": 2
+                }
+            }
+
+        and:
+
+            {
+                "page_start": 1,
+                "page_end": 2
+            }
+
+        Top-level fields are merged into nested metadata
+        without overwriting valid nested values.
+        """
+
+        metadata = {}
+
+        # ---------------------------------------------------------
+        # Nested metadata
+        # ---------------------------------------------------------
+
+        nested = self._get_value(
             result,
             "metadata",
             None,
         )
 
         if isinstance(
-            metadata,
+            nested,
             dict,
         ):
-            return metadata
+
+            metadata.update(
+                nested
+            )
+
+        # ---------------------------------------------------------
+        # Top-level metadata
+        # ---------------------------------------------------------
 
         if isinstance(
             result,
             dict,
         ):
 
-            value = result.get(
-                "metadata"
+            metadata_fields = (
+                "chunk_id",
+                "document_id",
+                "document_name",
+                "content_type",
+                "page_start",
+                "page_end",
+                "section_path",
+                "caption",
+                "document_part",
             )
 
-            if isinstance(
-                value,
-                dict,
-            ):
-                return value
+            for field in metadata_fields:
 
-        return {}
+                value = result.get(
+                    field
+                )
+
+                if value is not None:
+
+                    # Top-level value is used only
+                    # when nested metadata doesn't
+                    # already contain a value.
+                    if (
+                        field not in metadata
+                        or metadata[field] is None
+                    ):
+
+                        metadata[field] = value
+
+        # ---------------------------------------------------------
+        # Object attributes
+        # ---------------------------------------------------------
+
+        else:
+
+            metadata_fields = (
+                "chunk_id",
+                "document_id",
+                "document_name",
+                "content_type",
+                "page_start",
+                "page_end",
+                "section_path",
+                "caption",
+                "document_part",
+            )
+
+            for field in metadata_fields:
+
+                value = getattr(
+                    result,
+                    field,
+                    None,
+                )
+
+                if value is not None:
+
+                    if (
+                        field not in metadata
+                        or metadata[field] is None
+                    ):
+
+                        metadata[field] = value
+
+        return metadata
 
     # =========================================================
     # GENERIC VALUE HELPER

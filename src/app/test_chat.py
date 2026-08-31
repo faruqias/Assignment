@@ -1,4 +1,4 @@
-from src.app.ollama_client import OllamaClient
+from src.app.azure_openai_client import AzureOpenAIClient
 from src.app.prompt_builder import PromptBuilder
 
 from src.document.document_processor import DocumentProcessor
@@ -75,6 +75,7 @@ def main():
     )
 
     if not chunks:
+
         raise RuntimeError(
             "No chunks generated."
         )
@@ -180,13 +181,17 @@ def main():
 
     prompt_builder = PromptBuilder()
 
-    llm_client = OllamaClient()
+    # ---------------------------------------------------------
+    # Azure OpenAI
+    # ---------------------------------------------------------
+
+    openapi_client = AzureOpenAIClient()
 
     chatbot = RAGChatbot(
         retriever=retriever,
         reranker=reranker,
         prompt_builder=prompt_builder,
-        llm_client=llm_client,
+        openapi_client=openapi_client,
         chunks=chunks,
     )
 
@@ -273,7 +278,9 @@ def main():
             "RAGChatbot selected no context results."
         )
 
-    if len(selected_results) > chatbot.max_context_results:
+    if len(selected_results) > (
+        chatbot.max_context_results
+    ):
 
         raise RuntimeError(
             "Context result limit exceeded."

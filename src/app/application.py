@@ -13,38 +13,7 @@ from src.retriever.reranker import BGEReranker
 
 from src.app.prompt_builder import PromptBuilder
 from src.app.rag_chatbot import RAGChatbot
-
-import ollama
-
-
-class OllamaClient:
-    """
-    Small adapter around the Ollama Python client.
-    """
-
-    def generate(
-        self,
-        prompt,
-        model,
-        temperature,
-        max_tokens,
-    ):
-
-        response = ollama.chat(
-            model=model,
-            messages=[
-                {
-                    "role": "user",
-                    "content": prompt,
-                }
-            ],
-            options={
-                "temperature": temperature,
-                "num_predict": max_tokens,
-            },
-        )
-
-        return response["message"]["content"]
+from src.app.azure_openai_client import AzureOpenAIClient
 
 
 class RAGApplication:
@@ -137,13 +106,13 @@ class RAGApplication:
         self.prompt_builder = PromptBuilder()
 
         # =====================================================
-        # 8. OLLAMA CLIENT
+        # 8. AZURE OPENAI CLIENT
         # =====================================================
 
         print()
-        print("8. Ollama Client")
+        print("8. Azure OpenAI Client")
 
-        self.llm_client = OllamaClient()
+        self.openapi_client = AzureOpenAIClient()
 
         # =====================================================
         # CHATBOT
@@ -375,11 +344,124 @@ class RAGApplication:
                 retriever=latest_document["retriever"],
                 reranker=self.reranker,
                 prompt_builder=self.prompt_builder,
-                llm_client=self.llm_client,
-                chunks=chunks
+                openapi_client=self.openapi_client,
+                chunks=latest_document["chunks"]
             )
 
         return "\n".join(messages)
+
+    # =========================================================
+    # LOAD EXISTING VECTOR STORE
+    # =========================================================
+
+    def _load_existing_document(self):
+        """
+        Load an existing persisted vector store.
+
+        This does not process or embed the original PDF again.
+        It reconstructs the retrieval pipeline from the persisted
+        FAISS index and metadata/chunks.
+        """
+
+        if not self.VECTORSTORE_ROOT.exists():
+            return False
+
+        document_dirs = [
+            path
+            for path in self.VECTORSTORE_ROOT.iterdir()
+            if path.is_dir()
+            and (path / "index.faiss").exists()
+            and (path / "metadata.json").exists()
+        ]
+
+        if not document_dirs:
+            return False
+
+        # Prefer the most recently modified persisted index.
+        document_dir = max(
+            document_dirs,
+            key=lambda path: (
+                path / "index.faiss"
+            ).stat().st_mtime,
+        )
+
+        document_id = document_dir.name
+
+        if document_id in self.documents:
+            document = self.documents[document_id]
+
+        else:
+            indexer = VectorIndexer(
+                index_path=str(
+                    document_dir / "index.faiss"
+                ),
+                metadata_path=str(
+                    document_dir / "metadata.json"
+                ),
+            )
+
+            indexer.load()
+
+            # Support the existing VectorIndexer implementations
+            # that expose persisted records under either name.
+            chunks = getattr(
+                indexer,
+                "chunks",
+                None,
+            )
+
+            if chunks is None:
+                chunks = getattr(
+                    indexer,
+                    "documents",
+                    None,
+                )
+
+            if not chunks:
+                raise RuntimeError(
+                    "Existing vector store was loaded, but indexed "
+                    "chunks were not found. VectorIndexer must expose "
+                    "the persisted chunk metadata for BM25/reranking."
+                )
+
+            bm25 = BM25Retriever(chunks)
+            rrf = RRFFusion()
+
+            retriever = Retriever(
+                indexer=indexer,
+                embedding_service=self.embedding,
+                bm25_retriever=bm25,
+                rrf_fusion=rrf,
+            )
+
+            document = {
+                "document_id": document_id,
+                "document_name": document_id,
+                "chunks": chunks,
+                "indexer": indexer,
+                "bm25": bm25,
+                "rrf": rrf,
+                "retriever": retriever,
+            }
+
+            self.documents[document_id] = document
+
+        self.indexer = document["indexer"]
+
+        self.chatbot = RAGChatbot(
+            retriever=document["retriever"],
+            reranker=self.reranker,
+            prompt_builder=self.prompt_builder,
+            openapi_client=self.openapi_client,
+            chunks=document["chunks"],
+        )
+
+        print()
+        print(
+            f"Existing vector store loaded: {document_id}"
+        )
+
+        return True
 
     # =========================================================
     # ASK QUESTION
@@ -400,8 +482,18 @@ class RAGApplication:
 
             return history or []
 
+        # No current-session upload is required.
+        # If the chatbot is not initialized, try to use an
+        # already persisted vector store.
         if self.chatbot is None:
+            try:
+                self._load_existing_document()
+            except Exception as exc:
+                print()
+                print("ERROR LOADING EXISTING VECTOR STORE:")
+                print(exc)
 
+        if self.chatbot is None:
             history = history or []
 
             history.append(
@@ -415,7 +507,8 @@ class RAGApplication:
                 {
                     "role": "assistant",
                     "content": (
-                        "Please upload a PDF document first."
+                        "I couldn't find any indexed document "
+                        "to answer this question."
                     ),
                 }
             )
