@@ -15,10 +15,35 @@ from src.retriever.reranker import BGEReranker
 from src.app.rag_chatbot import RAGChatbot
 
 
+# ============================================================
+# TEST DOCUMENT
+# ============================================================
+
 PDF_PATH = "data/pdfs/attention.pdf"
 
-FAISS_PATH = "data/vectorstore/test_attention/index.faiss"
-METADATA_PATH = "data/vectorstore/test_attention/metadata.json"
+
+# ============================================================
+# TEST VECTOR STORE
+#
+# IMPORTANT:
+# This is intentionally separate from the main vector store.
+#
+# Main:
+#     data/vectorstore/
+#
+# Test:
+#     data/vectorstore_test/
+#
+# Running this test will NOT modify the main database.
+# ============================================================
+
+FAISS_PATH = (
+    "data/vectorstore_test/index.faiss"
+)
+
+METADATA_PATH = (
+    "data/vectorstore_test/metadata.json"
+)
 
 
 def main():
@@ -57,8 +82,14 @@ def main():
         f"   Elements: {len(elements)}"
     )
 
+    if not elements:
+
+        raise RuntimeError(
+            "No document elements found."
+        )
+
     # =========================================================
-    # 3. CHUNK
+    # 3. STRUCTURE-AWARE CHUNKING
     # =========================================================
 
     print()
@@ -90,11 +121,15 @@ def main():
     embedding = EmbeddingService()
 
     # =========================================================
-    # 5. GENERATE EMBEDDINGS
+    # 5. GENERATE DOCUMENT EMBEDDINGS
+    #
+    # This is done ONLY during test ingestion.
+    #
+    # The chat-only test should NOT execute this step.
     # =========================================================
 
     print()
-    print("5. Generating embeddings...")
+    print("5. Generating document embeddings...")
 
     embeddings = embedding.embed_documents(
         chunks
@@ -106,11 +141,11 @@ def main():
     )
 
     # =========================================================
-    # 6. VECTOR INDEX
+    # 6. CREATE TEST FAISS INDEX
     # =========================================================
 
     print()
-    print("6. Creating FAISS index...")
+    print("6. Creating test FAISS index...")
 
     indexer = VectorIndexer(
         index_path=FAISS_PATH,
@@ -127,6 +162,16 @@ def main():
     print(
         "   Vectors:",
         indexer.vector_count
+    )
+
+    print(
+        "   FAISS:",
+        FAISS_PATH
+    )
+
+    print(
+        "   Metadata:",
+        METADATA_PATH
     )
 
     # =========================================================
@@ -164,7 +209,15 @@ def main():
     )
 
     # =========================================================
-    # 10. RERANKER
+    # 10. BGE RERANKER
+    #
+    # BGEReranker itself reads USE_RERANKER from .env.
+    #
+    # USE_RERANKER=true
+    #     -> BGE Reranker is loaded
+    #
+    # USE_RERANKER=false
+    #     -> Model is NOT loaded
     # =========================================================
 
     print()
@@ -173,19 +226,29 @@ def main():
     reranker = BGEReranker()
 
     # =========================================================
-    # 11. CHATBOT
+    # 11. PROMPT BUILDER
     # =========================================================
 
     print()
-    print("11. Creating RAG Chatbot...")
+    print("11. Creating Prompt Builder...")
 
     prompt_builder = PromptBuilder()
 
-    # ---------------------------------------------------------
-    # Azure OpenAI
-    # ---------------------------------------------------------
+    # =========================================================
+    # 12. AZURE OPENAI
+    # =========================================================
+
+    print()
+    print("12. Creating Azure OpenAI client...")
 
     openapi_client = AzureOpenAIClient()
+
+    # =========================================================
+    # 13. RAG CHATBOT
+    # =========================================================
+
+    print()
+    print("13. Creating RAG Chatbot...")
 
     chatbot = RAGChatbot(
         retriever=retriever,
@@ -196,7 +259,7 @@ def main():
     )
 
     # =========================================================
-    # 12. QUESTION
+    # 14. QUESTION
     # =========================================================
 
     question = (
@@ -211,7 +274,7 @@ def main():
     print(question)
 
     # =========================================================
-    # 13. RUN RAG CHATBOT
+    # 15. RUN RAG CHATBOT
     # =========================================================
 
     print()
@@ -223,14 +286,20 @@ def main():
         question
     )
 
-    answer = response["answer"]
+    answer = response[
+        "answer"
+    ]
 
-    selected_results = response["results"]
+    selected_results = response[
+        "results"
+    ]
 
-    sources = response["sources"]
+    sources = response[
+        "sources"
+    ]
 
     # =========================================================
-    # 14. ANSWER
+    # 16. ANSWER
     # =========================================================
 
     print()
@@ -241,7 +310,7 @@ def main():
     print(answer)
 
     # =========================================================
-    # 15. SOURCES
+    # 17. SOURCES
     # =========================================================
 
     print()
@@ -249,16 +318,22 @@ def main():
     print("SOURCES")
     print("=" * 70)
 
+    if not sources:
+
+        print(
+            "No sources returned."
+        )
+
     for source in sources:
 
         print(
-            f"• {source['chunk_id']} | "
-            f"Page {source['page_start']}-"
-            f"{source['page_end']}"
+            f"• {source.get('chunk_id')} | "
+            f"Page {source.get('page_start')}-"
+            f"{source.get('page_end')}"
         )
 
     # =========================================================
-    # 16. VALIDATION
+    # 18. VALIDATION
     # =========================================================
 
     print()
@@ -266,17 +341,29 @@ def main():
     print("VALIDATION")
     print("=" * 70)
 
-    if not answer.strip():
+    # ---------------------------------------------------------
+    # Answer validation
+    # ---------------------------------------------------------
+
+    if not answer or not answer.strip():
 
         raise RuntimeError(
             "RAGChatbot returned empty answer."
         )
+
+    # ---------------------------------------------------------
+    # Context validation
+    # ---------------------------------------------------------
 
     if not selected_results:
 
         raise RuntimeError(
             "RAGChatbot selected no context results."
         )
+
+    # ---------------------------------------------------------
+    # Context result limit
+    # ---------------------------------------------------------
 
     if len(selected_results) > (
         chatbot.max_context_results
@@ -286,15 +373,48 @@ def main():
             "Context result limit exceeded."
         )
 
-    if len(sources) != len(selected_results):
+    # ---------------------------------------------------------
+    # Source propagation
+    # ---------------------------------------------------------
+
+    if len(sources) != len(
+        selected_results
+    ):
 
         raise RuntimeError(
             "Source propagation mismatch."
         )
 
+    # ---------------------------------------------------------
+    # FAISS validation
+    # ---------------------------------------------------------
+
+    if indexer.vector_count != len(
+        chunks
+    ):
+
+        raise RuntimeError(
+            "FAISS vector count does not "
+            "match chunk count."
+        )
+
+    # =========================================================
+    # VALIDATION RESULTS
+    # =========================================================
+
     print(
         "Answer length :",
         len(answer)
+    )
+
+    print(
+        "Chunks        :",
+        len(chunks)
+    )
+
+    print(
+        "FAISS vectors :",
+        indexer.vector_count
     )
 
     print(
@@ -305,6 +425,17 @@ def main():
     print(
         "Sources       :",
         len(sources)
+    )
+
+    print()
+    print(
+        "Vector store  :",
+        FAISS_PATH
+    )
+
+    print(
+        "Metadata      :",
+        METADATA_PATH
     )
 
     print()

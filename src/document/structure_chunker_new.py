@@ -1,7 +1,10 @@
+import os
+from dotenv import load_dotenv
 from collections import Counter
 from typing import Any, Dict, List
 
-
+load_dotenv()
+    
 class StructureChunker:
     """
     Structure-aware document chunker.
@@ -25,7 +28,12 @@ class StructureChunker:
         - LLM generation
     """
 
-    MAX_CHUNK_CHARS = 5000
+    MAX_CHUNK_CHARS = int(
+    os.getenv(
+        "DEFAULT_CHUNK_SIZE",
+        "5000"
+    )
+)
 
     # Elements that should not become normal text content.
     IGNORED_TYPES = {
