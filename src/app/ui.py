@@ -9,6 +9,10 @@ from src.app.application import RAGApplication
 
 app = RAGApplication()
 
+def clear_conversation():
+    app.chatbot.memory.clear()
+    return []
+
 
 # =========================================================
 # CSS
@@ -118,6 +122,16 @@ with gr.Blocks(
                 height=500,
                 render_markdown=True
             )
+
+            # clear_chat = gr.Button(
+            #     "Clear Conversation"
+            # )
+
+            # clear_chat.click(
+            #     fn=clear_conversation,
+            #     inputs=None,
+            #     outputs=chatbot
+            # )
 
             message = gr.Textbox(
                 label="Question",

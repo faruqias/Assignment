@@ -17,18 +17,22 @@ from src.app.rag_chatbot import RAGChatbot
 # ============================================================
 
 FAISS_PATH = (
-    "data/vectorstore/test_attention/index.faiss"
+    "data/vectorstore/index.faiss"
 )
 
 METADATA_PATH = (
-    "data/vectorstore/test_attention/metadata.json"
+    "data/vectorstore/metadata.json"
 )
 
+
+# ============================================================
+# MAIN
+# ============================================================
 
 def main():
 
     print("=" * 70)
-    print("RAG CHATBOT TEST")
+    print("RAG CHATBOT - CONVERSATIONAL MEMORY TEST")
     print("=" * 70)
 
     # =========================================================
@@ -56,7 +60,7 @@ def main():
         )
 
     # =========================================================
-    # 2. LOAD EXISTING CHUNKS FROM METADATA
+    # 2. LOAD CHUNKS
     # =========================================================
 
     print()
@@ -82,10 +86,11 @@ def main():
     print("3. Loading embedding service...")
 
     # IMPORTANT:
-    # We DO NOT embed the document again.
     #
-    # BGE-M3 is only required at query time by
-    # the dense retriever.
+    # We are NOT embedding the PDF again.
+    #
+    # BGE-M3 is only used for the
+    # question/query embedding.
 
     embedding = EmbeddingService()
 
@@ -166,126 +171,349 @@ def main():
     )
 
     # =========================================================
-    # 11. QUESTION
+    # 11. CLEAR MEMORY
     # =========================================================
 
-    question = (
-        "How does scaled dot-product attention work?"
+    print()
+    print("11. Clearing conversation memory...")
+
+    chatbot.memory.clear()
+
+    print(
+        f"   Memory interactions: "
+        f"{chatbot.memory.count()}"
     )
 
-    print()
-    print("=" * 70)
-    print("QUESTION")
-    print("=" * 70)
+    if chatbot.memory.count() != 0:
 
-    print(question)
+        raise RuntimeError(
+            "Memory was not cleared."
+        )
 
     # =========================================================
-    # 12. RUN RAG
+    # 12. CONVERSATION QUESTIONS
     # =========================================================
 
-    print()
-    print("=" * 70)
-    print("RUNNING RAG CHATBOT")
-    print("=" * 70)
+    questions = [
 
-    response = chatbot.ask(
-        question
-    )
+        # -----------------------------------------------------
+        # Interaction 1
+        # -----------------------------------------------------
 
-    answer = response["answer"]
+        "What is BERT?",
 
-    selected_results = response[
-        "results"
+        # -----------------------------------------------------
+        # Interaction 2
+        # -----------------------------------------------------
+
+        "What is its pre-training objective?",
+
+        # -----------------------------------------------------
+        # Interaction 3
+        # -----------------------------------------------------
+
+        "What are the main contributions of BERT?",
+
+        # -----------------------------------------------------
+        # Interaction 4
+        # -----------------------------------------------------
+
+        "What datasets were used to evaluate BERT?",
+
+        # -----------------------------------------------------
+        # Interaction 5
+        # -----------------------------------------------------
+
+        "What experimental results support its effectiveness?"
     ]
 
-    sources = response[
-        "sources"
-    ]
+    # =========================================================
+    # 13. RUN CONVERSATION
+    # =========================================================
 
-    # =========================================================
-    # 13. ANSWER
-    # =========================================================
+    answers = []
 
     print()
     print("=" * 70)
-    print("ANSWER")
+    print("RUNNING 5-INTERACTION CONVERSATION")
     print("=" * 70)
 
-    print(answer)
+    for number, question in enumerate(
+        questions,
+        start=1
+    ):
 
-    # =========================================================
-    # 14. SOURCES
-    # =========================================================
-
-    print()
-    print("=" * 70)
-    print("SOURCES")
-    print("=" * 70)
-
-    for source in sources:
+        print()
+        print(
+            "=" * 70
+        )
 
         print(
-            f"• {source.get('chunk_id')} | "
-            f"Page {source.get('page_start')}-"
-            f"{source.get('page_end')}"
+            f"INTERACTION {number}"
         )
 
+        print(
+            "=" * 70
+        )
+
+        print()
+        print(
+            "QUESTION:"
+        )
+
+        print(question)
+
+        # -----------------------------------------------------
+        # Ask chatbot
+        # -----------------------------------------------------
+
+        response = chatbot.ask(
+            question
+        )
+
+        answer = response.get(
+            "answer",
+            ""
+        )
+
+        answers.append(
+            answer
+        )
+
+        # -----------------------------------------------------
+        # Results
+        # -----------------------------------------------------
+
+        selected_results = response.get(
+            "results",
+            []
+        )
+
+        sources = response.get(
+            "sources",
+            []
+        )
+
+        print()
+        print(
+            "ANSWER:"
+        )
+
+        print(answer)
+
+        # -----------------------------------------------------
+        # Sources
+        # -----------------------------------------------------
+
+        print()
+        print(
+            "SOURCES:"
+        )
+
+        for source in sources:
+
+            print(
+                f"• {source.get('chunk_id')} | "
+                f"Page "
+                f"{source.get('page_start')}-"
+                f"{source.get('page_end')}"
+            )
+
+        # -----------------------------------------------------
+        # Memory
+        # -----------------------------------------------------
+
+        memory_count = (
+            chatbot.memory.count()
+        )
+
+        print()
+        print(
+            f"MEMORY COUNT: "
+            f"{memory_count}"
+        )
+
+        # -----------------------------------------------------
+        # Validate answer
+        # -----------------------------------------------------
+
+        if not answer.strip():
+
+            raise RuntimeError(
+                f"Interaction {number} "
+                "returned an empty answer."
+            )
+
+        # -----------------------------------------------------
+        # Validate context
+        # -----------------------------------------------------
+
+        if not selected_results:
+
+            raise RuntimeError(
+                f"Interaction {number} "
+                "selected no context."
+            )
+
+        # -----------------------------------------------------
+        # Validate sources
+        # -----------------------------------------------------
+
+        if len(sources) != len(
+            selected_results
+        ):
+
+            raise RuntimeError(
+                f"Interaction {number}: "
+                "source propagation mismatch."
+            )
+
+        # -----------------------------------------------------
+        # Validate memory limit
+        # -----------------------------------------------------
+
+        if memory_count > 4:
+
+            raise RuntimeError(
+                "Conversation memory exceeded "
+                "the maximum of 4 interactions."
+            )
+
     # =========================================================
-    # 15. VALIDATION
+    # 14. DISPLAY FINAL MEMORY
     # =========================================================
 
     print()
     print("=" * 70)
-    print("VALIDATION")
+    print("FINAL CONVERSATION MEMORY")
     print("=" * 70)
 
-    if not answer.strip():
+    memory = (
+        chatbot.memory.get_history()
+    )
 
-        raise RuntimeError(
-            "RAGChatbot returned empty answer."
+    for number, interaction in enumerate(
+        memory,
+        start=1
+    ):
+
+        print()
+        print(
+            f"Memory Interaction {number}"
         )
 
-    if not selected_results:
-
-        raise RuntimeError(
-            "RAGChatbot selected no context results."
+        print(
+            "Question:"
         )
 
-    if len(selected_results) > (
-        chatbot.max_context_results
+        print(
+            interaction["question"]
+        )
+
+        print(
+            "Answer:"
+        )
+
+        print(
+            interaction["answer"]
+        )
+
+    # =========================================================
+    # 15. MEMORY VALIDATION
+    # =========================================================
+
+    print()
+    print("=" * 70)
+    print("MEMORY VALIDATION")
+    print("=" * 70)
+
+    # ---------------------------------------------------------
+    # Exactly 4 interactions should remain
+    # ---------------------------------------------------------
+
+    if len(memory) != 4:
+
+        raise RuntimeError(
+            "Memory validation failed. "
+            f"Expected 4 interactions, "
+            f"found {len(memory)}."
+        )
+
+    # ---------------------------------------------------------
+    # First interaction should have been removed
+    # ---------------------------------------------------------
+
+    first_question = (
+        memory[0]["question"]
+    )
+
+    if first_question == questions[0]:
+
+        raise RuntimeError(
+            "Oldest interaction was not removed."
+        )
+
+    # ---------------------------------------------------------
+    # Expected questions are Q2-Q5
+    # ---------------------------------------------------------
+
+    expected_questions = (
+        questions[1:]
+    )
+
+    actual_questions = [
+        interaction["question"]
+        for interaction in memory
+    ]
+
+    if actual_questions != (
+        expected_questions
     ):
 
         raise RuntimeError(
-            "Context result limit exceeded."
+            "Memory ordering/content mismatch."
+            f"\nExpected: {expected_questions}"
+            f"\nActual:   {actual_questions}"
         )
 
-    if len(sources) != len(
-        selected_results
-    ):
+    # =========================================================
+    # 16. FINAL VALIDATION
+    # =========================================================
 
-        raise RuntimeError(
-            "Source propagation mismatch."
-        )
+    print()
+    print("=" * 70)
+    print("FINAL VALIDATION")
+    print("=" * 70)
 
     print(
-        "Answer length :",
-        len(answer)
+        "Interactions executed :",
+        len(questions)
     )
 
     print(
-        "Context used  :",
-        len(selected_results)
+        "Interactions retained :",
+        len(memory)
     )
 
     print(
-        "Sources       :",
-        len(sources)
+        "Oldest interaction    :",
+        questions[0]
+    )
+
+    print(
+        "Oldest retained       :",
+        memory[0]["question"]
     )
 
     print()
     print(
-        "RAG CHATBOT VALIDATION PASSED"
+        "Conversation memory is limited "
+        "to the last 4 interactions."
+    )
+
+    print()
+    print(
+        "RAG CHATBOT MEMORY VALIDATION PASSED"
     )
 
     print("=" * 70)
