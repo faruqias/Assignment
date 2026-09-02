@@ -1,2 +1,14 @@
+python-dotenv
 docling
-ollama
+sentence-transformers
+faiss-cpu
+rank-bm25
+FlagEmbedding
+openai
+langchain
+langchain-core
+langchain-community
+langchain-openai
+ragas==0.4.3
+numpy
+pandas
