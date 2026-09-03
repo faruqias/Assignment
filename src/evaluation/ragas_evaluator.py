@@ -31,12 +31,12 @@ from ragas.metrics import (
 from ragas.llms.base import BaseRagasLLM
 from ragas.embeddings import OpenAIEmbeddings
 
-from src.app.azure_openai_client import AzureOpenAIClient
-from src.app.prompt_builder import PromptBuilder
+from src.llm_client.azure_openai_client import AzureOpenAIClient
+from src.prompt.prompt_builder import PromptBuilder
 from src.app.rag_chatbot import RAGChatbot
 
-from src.document.embedding_service import EmbeddingService
-from src.document.vector_indexer import VectorIndexer
+from src.embeddings.embedding_service import EmbeddingService
+from src.embeddings.vector_indexer import VectorIndexer
 
 from src.retriever.bm25_retriever import BM25Retriever
 from src.retriever.rrf_fusion import RRFFusion
