@@ -1,11 +1,11 @@
-from src.app.azure_openai_client import AzureOpenAIClient
-from src.app.prompt_builder import PromptBuilder
+from src.llm_client.azure_openai_client import AzureOpenAIClient
+from src.prompt.prompt_builder import PromptBuilder
 
 from src.document.document_processor import DocumentProcessor
 from src.document.document_parser import DocumentParser
-from src.document.structure_chunker_new import StructureChunker
-from src.document.embedding_service import EmbeddingService
-from src.document.vector_indexer import VectorIndexer
+from src.chunking.structure_chunker_new import StructureChunker
+from src.embeddings.embedding_service import EmbeddingService
+from src.embeddings.vector_indexer import VectorIndexer
 
 from src.retriever.bm25_retriever import BM25Retriever
 from src.retriever.rrf_fusion import RRFFusion

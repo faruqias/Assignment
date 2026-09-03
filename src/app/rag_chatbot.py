@@ -1,7 +1,7 @@
 import os
 import time
 from typing import Any, Dict, List, Tuple, Iterator
-from src.app.conversation_memory import ConversationMemory
+from src.memory.conversation_memory import ConversationMemory
 
 class RAGChatbot:
     """

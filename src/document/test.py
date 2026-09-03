@@ -2,9 +2,9 @@ from pathlib import Path
 
 from src.document.document_processor import DocumentProcessor
 from src.document.document_parser import DocumentParser
-from src.document.structure_chunker_new import StructureChunker
-from src.document.embedding_service import EmbeddingService
-from src.document.vector_indexer import VectorIndexer
+from src.chunking.structure_chunker_new import StructureChunker
+from src.embeddings.embedding_service import EmbeddingService
+from src.embeddings.vector_indexer import VectorIndexer
 
 
 PDF_PATH = "data/pdfs/attention.pdf"
